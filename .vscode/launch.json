@@ -1,0 +1,15 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: Debug with Specific Venv",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/learn_price_elasticity.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            // 🚨 Key step: Set the absolute path to your interpreter executable
+            "python": "/Users/hazymoji/Documents/DataDev/ML Projects/retail_analytics/retail_venv/bin/python" 
+        }
+    ]
+}

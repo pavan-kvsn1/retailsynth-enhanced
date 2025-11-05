@@ -1,0 +1,34 @@
+# Runtime dependencies for RetailSynth Enhanced
+# Core scientific computing
+numpy>=1.26,<2.0
+pandas>=2.1,<3.0
+scipy>=1.11,<2.0
+pyarrow>=14.0  # For parquet support
+
+# JAX ecosystem (GPU acceleration)
+jax[cpu]>=0.4.23
+jaxlib>=0.4.23
+
+# Bayesian modeling
+numpyro>=0.13,<1.0
+
+# Optimization
+optax>=0.1,<1.0
+optuna>=3.5,<4.0  # For calibration
+
+# Machine learning
+scikit-learn>=1.3,<2.0
+
+# Configuration & I/O
+pyyaml>=6.0,<7.0
+toml>=0.10
+
+# Progress & display
+tqdm>=4.66,<5.0
+rich>=13.6,<14.0
+
+# Sparse matrices (for cross-price elasticity)
+sparse>=0.14
+
+# Data validation
+pydantic>=2.0,<3.0
