@@ -335,22 +335,22 @@ class PriceStateHMM:
         Returns:
             Similar product ID with learned parameters
         """
-        if product_id not in self.products['PRODUCT_ID'].values:
+        if product_id not in self.products['product_id'].values:
             # Return any product with parameters
             if len(self.transition_matrices) > 0:
                 return list(self.transition_matrices.keys())[0]
             else:
                 raise ValueError("No HMM parameters learned yet")
         
-        product = self.products[self.products['PRODUCT_ID'] == product_id].iloc[0]
+        product = self.products[self.products['product_id'] == product_id].iloc[0]
         
         # Find products in same commodity
         similar = self.products[
-            self.products['COMMODITY_DESC'] == product.get('COMMODITY_DESC', '')
+            self.products['commodity_desc'] == product.get('commodity_desc', '')
         ]
         
         # Return one with learned parameters
-        for similar_id in similar['PRODUCT_ID']:
+        for similar_id in similar['product_id']:
             if similar_id in self.transition_matrices:
                 return similar_id
         

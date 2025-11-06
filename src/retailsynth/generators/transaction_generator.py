@@ -6,11 +6,18 @@ from retailsynth.calibration import CalibrationEngine
 from retailsynth.engines import GPUUtilityEngine, StoreLoyaltyEngine, VectorizedPreComputationEngine
 from datetime import datetime
 from retailsynth.config import EnhancedRetailConfig
-from typing import Tuple, List, Dict
+from typing import Tuple, List, Dict, Optional
 from datetime import date
 
+# Sprint 1.3: Import purchase history components
+from retailsynth.engines.customer_state import CustomerStateManager
+from retailsynth.engines.purchase_history_engine import PurchaseHistoryEngine
+
+# Sprint 1.4: Import basket composition components
+from retailsynth.engines.basket_composer import BasketComposer
+
 # ============================================================================
-# TRANSACTION GENERATOR (v3.3, v3.5, v3.6 combined)
+# TRANSACTION GENERATOR (v3.3, v3.5, v3.6 + Sprint 1.3 + Sprint 1.4)
 # ============================================================================
 
 class ComprehensiveTransactionGenerator:
@@ -19,17 +26,31 @@ class ComprehensiveTransactionGenerator:
     - GPU acceleration (v3.3)
     - Fixed JIT issues (v3.5)
     - Store loyalty (v3.6)
+    - Purchase history & state dependence (Sprint 1.3)
+    - Basket composition logic (Sprint 1.4)
     """
     
     def __init__(self, precomp: VectorizedPreComputationEngine, 
                  utility_engine: GPUUtilityEngine,
                  store_loyalty: StoreLoyaltyEngine,
-                 config: EnhancedRetailConfig):
+                 config: EnhancedRetailConfig,
+                 state_manager: Optional[CustomerStateManager] = None,
+                 history_engine: Optional[PurchaseHistoryEngine] = None,
+                 basket_composer: Optional[BasketComposer] = None):
         self.precomp = precomp
         self.utility_engine = utility_engine
         self.store_loyalty = store_loyalty
         self.config = config
         self.rng_key = jax.random.PRNGKey(config.random_seed)
+        
+        # Sprint 1.3: Purchase history components
+        self.state_manager = state_manager
+        self.history_engine = history_engine
+        self.enable_history = (state_manager is not None and history_engine is not None)
+        
+        # Sprint 1.4: Basket composition
+        self.basket_composer = basket_composer
+        self.enable_basket_composition = (basket_composer is not None)
     
     def generate_week_transactions_vectorized(self, 
                                              week_number: int,
@@ -38,8 +59,12 @@ class ComprehensiveTransactionGenerator:
                                              week_date: date) -> Tuple[List[Dict], List[Dict]]:
         """
         Generate all transactions for a week using vectorized GPU operations.
-        Includes store loyalty logic (v3.6).
+        Includes store loyalty logic (v3.6), purchase history (Sprint 1.3), and basket composition (Sprint 1.4).
         """
+        # Sprint 1.3: Update all customer states for current week
+        if self.enable_history:
+            self.state_manager.update_all_states(week_number)
+        
         # Convert to JAX arrays
         current_prices_jax = jnp.array(current_prices, dtype=jnp.float32)
         promo_flags_jax = jnp.array(promo_flags, dtype=jnp.float32)
@@ -78,26 +103,30 @@ class ComprehensiveTransactionGenerator:
         # Convert to numpy for product sampling
         all_utilities_np = np.array(all_utilities)
         
-        # Step 3: Determine number of products per customer
-        n_visiting = len(visiting_indices)
-        n_products_per_customer = np.ones(n_visiting, dtype=np.int32)
+        # Sprint 1.3: Apply history-dependent utility adjustments
+        if self.enable_history:
+            all_utilities_np = self._apply_history_adjustments(
+                all_utilities_np,
+                visiting_indices,
+                week_number,
+                current_prices
+            )
         
-        for i, idx in enumerate(visiting_indices):
-            personality = self.precomp.shopping_personalities[idx]
-            if personality == 'impulse':
-                n_products_per_customer[i] = np.random.choice([2, 3, 4, 5], p=[0.3, 0.3, 0.25, 0.15])
-            elif personality == 'planned':
-                n_products_per_customer[i] = np.random.choice([3, 4, 5, 6], p=[0.3, 0.4, 0.2, 0.1])
-            elif personality == 'convenience':
-                n_products_per_customer[i] = np.random.choice([1, 2, 3], p=[0.4, 0.4, 0.2])
-            else:  # price_anchor
-                n_products_per_customer[i] = np.random.choice([2, 3, 4], p=[0.3, 0.4, 0.3])
-        
-        # Step 4: Sample product choices (numpy - v3.5 fix)
-        product_choices = self.utility_engine.sample_product_choices_numpy(
-            all_utilities_np,
-            n_products_per_customer
-        )
+        # Step 3 & 4: Generate baskets (Sprint 1.4: Use basket composer if enabled)
+        if self.enable_basket_composition:
+            # NEW: Trip-purpose driven basket composition
+            baskets = self._generate_baskets_with_composer(
+                visiting_indices,
+                all_utilities_np,
+                week_number,
+                week_date
+            )
+        else:
+            # LEGACY: Independent product sampling
+            baskets = self._generate_baskets_legacy(
+                visiting_indices,
+                all_utilities_np
+            )
         
         # Step 5: Create transaction records
         transactions = []
@@ -110,24 +139,26 @@ class ComprehensiveTransactionGenerator:
             # Select store using loyalty engine (v3.6)
             store_id = self.store_loyalty.select_store_for_customer(customer_id, week_number)
             
-            # Get product choices for this customer
-            chosen_products = product_choices[i, :n_products_per_customer[i]]
+            # Get basket for this customer (list of (product_id, quantity) tuples)
+            basket = baskets[i]
             
-            if len(chosen_products) == 0:
+            if len(basket) == 0:
                 continue
             
             # Build line items
             line_items = []
             totals = {'revenue': 0, 'margin': 0, 'discount': 0, 'items': 0, 'promo_items': 0}
             
-            for line_num, product_idx in enumerate(chosen_products):
-                product_id = self.precomp.product_ids[product_idx]
+            for line_num, (product_id, quantity) in enumerate(basket):
+                # Find product index
+                product_idx = np.where(self.precomp.product_ids == product_id)[0]
+                if len(product_idx) == 0:
+                    continue
+                product_idx = product_idx[0]
+                
                 base_price = self.precomp.base_prices[product_idx]
                 final_price = current_prices[product_idx]
                 is_promoted = promo_flags[product_idx]
-                
-                # Quantity (typically 1, sometimes 2-3)
-                quantity = np.random.choice([1, 2, 3], p=[0.7, 0.2, 0.1])
                 
                 # Calculate amounts
                 line_total = final_price * quantity
@@ -148,6 +179,18 @@ class ComprehensiveTransactionGenerator:
                 totals['items'] += quantity
                 if is_promoted:
                     totals['promo_items'] += quantity
+                
+                # Sprint 1.3: Update customer state after purchase
+                if self.enable_history:
+                    customer_state = self.state_manager.get_state(customer_id)
+                    self.history_engine.update_customer_after_purchase(
+                        customer_state=customer_state,
+                        product_id=int(product_id),
+                        week=week_number,
+                        price=float(final_price),
+                        base_price=float(base_price),
+                        quantity=int(quantity)
+                    )
             
             if not line_items:
                 continue
@@ -160,29 +203,32 @@ class ComprehensiveTransactionGenerator:
             
             # Update store loyalty based on satisfaction (v3.6)
             self.store_loyalty.update_store_preference(
-                customer_id, store_id, satisfaction, week_number
+                customer_id, 
+                store_id, 
+                satisfaction,
+                week_number
             )
             
-            # Transaction record
+            # Create transaction record
             transaction = {
                 'transaction_id': transaction_id,
                 'customer_id': int(customer_id),
                 'store_id': int(store_id),
+                'week_number': week_number,
                 'transaction_date': week_date,
                 'transaction_time': self._generate_shopping_time(),
-                'week_number': int(week_number),
-                'total_items_count': int(totals['items']),
-                'total_revenue': round(totals['revenue'], 2),
-                'total_margin': round(totals['margin'], 2),
-                'total_discount': round(totals['discount'], 2),
-                'promotional_items_count': int(totals['promo_items']),
-                'satisfaction_score': round(satisfaction, 3),
-                'created_at': datetime.now()
+                'basket_size': len(line_items),
+                'total_items': int(totals['items']),
+                'total_revenue': round(float(totals['revenue']), 2),
+                'total_margin': round(float(totals['margin']), 2),
+                'total_discount': round(float(totals['discount']), 2),
+                'promo_items': int(totals['promo_items']),
+                'satisfaction_score': round(satisfaction, 3)
             }
             
             transactions.append(transaction)
             
-            # Transaction items
+            # Add line items
             for item in line_items:
                 item['transaction_id'] = transaction_id
                 transaction_items.append(item)
@@ -190,6 +236,144 @@ class ComprehensiveTransactionGenerator:
             transaction_id += 1
         
         return transactions, transaction_items
+    
+    def _apply_history_adjustments(
+        self,
+        base_utilities: np.ndarray,
+        visiting_indices: np.ndarray,
+        week_number: int,
+        current_prices: np.ndarray
+    ) -> np.ndarray:
+        """
+        Apply history-dependent utility adjustments (Sprint 1.3)
+        
+        Args:
+            base_utilities: Base utility matrix (n_customers × n_products)
+            visiting_indices: Indices of visiting customers
+            week_number: Current week
+            current_prices: Current prices for all products
+        
+        Returns:
+            Adjusted utilities incorporating purchase history
+        """
+        adjusted_utilities = base_utilities.copy()
+        
+        for i, customer_idx in enumerate(visiting_indices):
+            customer_id = self.precomp.customer_ids[customer_idx]
+            customer_state = self.state_manager.get_state(customer_id)
+            
+            # Calculate history-dependent adjustments (with price memory)
+            adjusted_utilities[i] = self.history_engine.calculate_history_utility(
+                customer_state=customer_state,
+                product_ids=self.precomp.product_ids,
+                base_utilities=base_utilities[i],
+                current_week=week_number,
+                current_prices=current_prices
+            )
+        
+        return adjusted_utilities
+    
+    def _generate_baskets_with_composer(
+        self,
+        visiting_indices: np.ndarray,
+        all_utilities: np.ndarray,
+        week_number: int,
+        week_date: date
+    ) -> List[List[Tuple[int, int]]]:
+        """
+        Generate baskets using trip-purpose driven basket composition (Sprint 1.4)
+        
+        Args:
+            visiting_indices: Indices of visiting customers
+            all_utilities: Utility matrix (n_customers × n_products)
+            week_number: Current week
+            week_date: Current week date
+        
+        Returns:
+            List of baskets (each basket is a list of (product_id, quantity))
+        """
+        baskets = []
+        
+        for i, customer_idx in enumerate(visiting_indices):
+            customer_id = self.precomp.customer_ids[customer_idx]
+            shopping_personality = self.precomp.shopping_personalities[customer_idx]
+            
+            # Get customer state if available
+            customer_state = None
+            if self.enable_history:
+                customer_state = self.state_manager.get_state(customer_id)
+            
+            # Get day of week from date
+            day_of_week = week_date.weekday() if week_date else None
+            
+            # Generate basket using composer
+            basket = self.basket_composer.generate_basket(
+                customer_id=int(customer_id),
+                shopping_personality=shopping_personality,
+                utilities=all_utilities[i],
+                product_ids=self.precomp.product_ids,
+                customer_state=customer_state,
+                week_number=week_number,
+                day_of_week=day_of_week
+            )
+            
+            baskets.append(basket)
+        
+        return baskets
+    
+    def _generate_baskets_legacy(
+        self,
+        visiting_indices: np.ndarray,
+        all_utilities: np.ndarray
+    ) -> List[List[Tuple[int, int]]]:
+        """
+        Generate baskets using independent product sampling (LEGACY)
+        
+        Args:
+            visiting_indices: Indices of visiting customers
+            all_utilities: Utility matrix (n_customers × n_products)
+        
+        Returns:
+            List of baskets (each basket is a list of (product_id, quantity))
+        """
+        baskets = []
+        n_visiting = len(visiting_indices)
+        
+        # Determine basket size per customer (personality-based)
+        n_products_per_customer = np.zeros(n_visiting, dtype=int)
+        for i, idx in enumerate(visiting_indices):
+            personality = self.precomp.shopping_personalities[idx]
+            # Use config-based basket size (simplified from trip-based to personality-based)
+            if personality == 'impulse':
+                n_products_per_customer[i] = max(1, int(np.random.poisson(self.config.basket_size_lambda * 0.7)))
+            elif personality == 'planned':
+                n_products_per_customer[i] = max(1, int(np.random.poisson(self.config.basket_size_lambda * 1.2)))
+            elif personality == 'convenience':
+                n_products_per_customer[i] = max(1, int(np.random.poisson(self.config.basket_size_lambda * 0.5)))
+            else:  # price_anchor
+                n_products_per_customer[i] = max(1, int(np.random.poisson(self.config.basket_size_lambda * 0.8)))
+        
+        # Sample product choices
+        product_choices = self.utility_engine.sample_product_choices_numpy(
+            all_utilities,
+            n_products_per_customer
+        )
+        
+        # Convert to basket format
+        for i in range(len(visiting_indices)):
+            chosen_products = product_choices[i, :n_products_per_customer[i]]
+            
+            basket = []
+            for product_idx in chosen_products:
+                product_id = self.precomp.product_ids[product_idx]
+                # Use config-based quantity distribution
+                quantity = max(1, int(np.random.normal(self.config.quantity_mean, self.config.quantity_std)))
+                quantity = min(quantity, self.config.quantity_max)  # Cap at max
+                basket.append((int(product_id), int(quantity)))
+
+            baskets.append(basket)
+        
+        return baskets
     
     def _generate_shopping_time(self) -> str:
         """Generate realistic shopping time"""
@@ -199,5 +383,3 @@ class ComprehensiveTransactionGenerator:
         )
         minute = np.random.randint(0, 60)
         return f"{hour:02d}:{minute:02d}:00"
-
-        

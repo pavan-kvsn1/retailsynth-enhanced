@@ -56,7 +56,7 @@ class CrossPriceElasticityEngine:
         self.substitute_groups = None
         self.complement_pairs = None
         self.product_id_to_idx = {
-            pid: idx for idx, pid in enumerate(self.products['PRODUCT_ID'])
+            pid: idx for idx, pid in enumerate(self.products['product_id'])
         }
         
         logger.info(f"Initialized CrossPriceElasticityEngine with {len(products_df)} products")
@@ -70,7 +70,7 @@ class CrossPriceElasticityEngine:
         Estimate cross-price elasticity from Dunnhumby transactions
         
         Args:
-            transactions_df: Transaction data with PRODUCT_ID, WEEK_NO, QUANTITY, SALES_VALUE
+            transactions_df: Transaction data with product_id, WEEK_NO, QUANTITY, SALES_VALUE
             min_observations: Minimum observations required for estimation
             top_competitors: Number of top competitors to consider per product
             elasticity_threshold: Minimum absolute elasticity to store

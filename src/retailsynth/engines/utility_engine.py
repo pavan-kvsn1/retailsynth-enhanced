@@ -65,7 +65,7 @@ class GPUUtilityEngine:
         Compute store visit probabilities for all customers in parallel.
         JIT-compiled for performance.
         """
-        base_prob = 0.3
+        base_prob = 0.5
         loyalty_boost = loyalty_levels * 0.2
         days_factor = jnp.minimum(0.3, days_since_visit / 30.0)
         visit_probs = base_prob + loyalty_boost + days_factor

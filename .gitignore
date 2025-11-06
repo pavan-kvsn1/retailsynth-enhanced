@@ -1,2 +1,2 @@
-data/raw/dunnhumby/
-data/processed/
+.vscode/
+__pycache__/

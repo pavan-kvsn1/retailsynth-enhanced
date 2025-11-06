@@ -40,7 +40,8 @@ class PurchaseHistoryEngine:
         loyalty_weight: float = 0.3,
         habit_weight: float = 0.4,
         inventory_weight: float = 0.5,
-        variety_weight: float = 0.2
+        variety_weight: float = 0.2,
+        price_memory_weight: float = 0.1
     ):
         """
         Initialize purchase history engine
@@ -51,12 +52,14 @@ class PurchaseHistoryEngine:
             habit_weight: Weight for habit strength (default 0.4)
             inventory_weight: Weight for inventory need (default 0.5)
             variety_weight: Weight for variety-seeking (default 0.2)
+            price_memory_weight: Weight for reference price effect (default 0.1)
         """
         self.products = products
         self.loyalty_weight = loyalty_weight
         self.habit_weight = habit_weight
         self.inventory_weight = inventory_weight
         self.variety_weight = variety_weight
+        self.price_memory_weight = price_memory_weight
         
         # Create product lookup dictionaries
         self._build_product_mappings()
@@ -67,17 +70,17 @@ class PurchaseHistoryEngine:
     def _build_product_mappings(self):
         """Build efficient lookup dictionaries for product attributes"""
         self.product_to_brand = dict(zip(
-            self.products['PRODUCT_ID'],
-            self.products['BRAND']
+            self.products['product_id'],
+            self.products['brand']
         ))
         
         self.product_to_category = dict(zip(
-            self.products['PRODUCT_ID'],
-            self.products['COMMODITY']
+            self.products['product_id'],
+            self.products['commodity_desc']
         ))
         
         self.product_to_assortment = dict(zip(
-            self.products['PRODUCT_ID'],
+            self.products['product_id'],
             self.products.get('assortment_role', 'mid_basket')
         ))
     
@@ -86,7 +89,8 @@ class PurchaseHistoryEngine:
         customer_state: CustomerState,
         product_ids: np.ndarray,
         base_utilities: np.ndarray,
-        current_week: int
+        current_week: int,
+        current_prices: Optional[np.ndarray] = None
     ) -> np.ndarray:
         """
         Calculate history-dependent utility adjustments
@@ -96,6 +100,7 @@ class PurchaseHistoryEngine:
             product_ids: Array of product IDs
             base_utilities: Base utility values (before history adjustment)
             current_week: Current week number
+            current_prices: Optional array of current prices for price memory effect
         
         Returns:
             Adjusted utilities incorporating history effects
@@ -117,7 +122,13 @@ class PurchaseHistoryEngine:
             inventory_need = customer_state.get_inventory_need(category, assortment_role)
             adjusted_utilities[i] += self.inventory_weight * inventory_need
             
-            # 3. Variety-seeking penalty (reduce utility of frequently purchased)
+            # 3. Price memory effect (if prices provided)
+            if current_prices is not None:
+                price_memory = customer_state.get_price_memory_effect(product_id, current_prices[i])
+                # Use configurable weight for price memory
+                adjusted_utilities[i] += self.price_memory_weight * price_memory
+            
+            # 4. Variety-seeking penalty (reduce utility of frequently purchased)
             if product_id in customer_state.products_tried:
                 # Reduce utility slightly for already-tried products
                 purchase_count = customer_state.purchase_count.get(product_id, 0)
@@ -167,7 +178,8 @@ class PurchaseHistoryEngine:
             category=category,
             week=week,
             satisfaction=satisfaction,
-            quantity=quantity
+            quantity=quantity,
+            price=price
         )
     
     def get_repeat_purchase_probability(

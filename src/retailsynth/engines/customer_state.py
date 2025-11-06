@@ -92,6 +92,13 @@ class CustomerState:
     # Recent satisfaction history (last 5 purchases)
     recent_satisfaction: Dict[int, List[float]] = field(default_factory=lambda: defaultdict(list))
     
+    # ========== Price Memory ==========
+    # Last price paid per product (for reference price effect)
+    last_price_paid: Dict[int, float] = field(default_factory=dict)
+    
+    # Average price paid per product (internal reference price)
+    avg_price_paid: Dict[int, float] = field(default_factory=lambda: defaultdict(float))
+
     def update_after_purchase(
         self,
         product_id: int,
@@ -99,7 +106,8 @@ class CustomerState:
         category: str,
         week: int,
         satisfaction: float = 0.7,
-        quantity: int = 1
+        quantity: int = 1,
+        price: float = 0.0
     ):
         """
         Update customer state after a purchase
@@ -111,6 +119,7 @@ class CustomerState:
             week: Current week number
             satisfaction: Satisfaction with purchase (0-1)
             quantity: Quantity purchased
+            price: Price paid for the product
         """
         self.current_week = week
         
@@ -150,6 +159,15 @@ class CustomerState:
         self.recent_satisfaction[product_id].append(satisfaction)
         if len(self.recent_satisfaction[product_id]) > 5:
             self.recent_satisfaction[product_id].pop(0)
+        
+        # 6. Update price memory
+        self.last_price_paid[product_id] = price
+        if product_id in self.avg_price_paid:
+            self.avg_price_paid[product_id] = (
+                0.7 * self.avg_price_paid[product_id] + 0.3 * price
+            )
+        else:
+            self.avg_price_paid[product_id] = price
     
     def _update_habit_strength(self, product_id: int):
         """
@@ -236,6 +254,33 @@ class CustomerState:
         
         return loyalty_bonus + habit_bonus + recency_bonus
     
+    def get_price_memory_effect(self, product_id: int, current_price: float) -> float:
+        """
+        Calculate price memory effect (reference price comparison)
+        
+        Args:
+            product_id: Product ID
+            current_price: Current price being offered
+        
+        Returns:
+            Utility adjustment based on price vs. reference price
+            Positive if current price < reference (good deal!)
+            Negative if current price > reference (expensive!)
+        """
+        if product_id not in self.avg_price_paid:
+            return 0.0  # No price memory yet
+        
+        reference_price = self.avg_price_paid[product_id]
+        
+        # Calculate price difference as percentage
+        price_diff_pct = (reference_price - current_price) / reference_price
+        
+        # Positive effect for discounts, negative for price increases
+        # Cap at ±2.0 utility points
+        price_effect = np.clip(price_diff_pct * 5.0, -2.0, 2.0)
+        
+        return price_effect
+    
     def get_inventory_need(self, category: str, assortment_role: str) -> float:
         """
         Calculate inventory-based need for a category
@@ -302,18 +347,19 @@ class CustomerStateManager:
     Provides efficient batch operations and state persistence
     """
     
-    def __init__(self, n_customers: int):
+    def __init__(self, customer_ids: List[int]):
         """
         Initialize state manager
         
         Args:
-            n_customers: Number of customers to track
+            customer_ids: List of customer IDs
         """
-        self.n_customers = n_customers
+        self.customer_ids = customer_ids
+        self.n_customers = len(customer_ids)
         self.states: Dict[int, CustomerState] = {}
         
         # Initialize all customer states
-        for customer_id in range(n_customers):
+        for customer_id in self.customer_ids:
             self.states[customer_id] = CustomerState(customer_id=customer_id)
     
     def get_state(self, customer_id: int) -> CustomerState:
@@ -389,18 +435,17 @@ class CustomerStateManager:
 # UTILITY FUNCTIONS
 # ============================================================================
 
-def initialize_customer_states(n_customers: int) -> CustomerStateManager:
+def initialize_customer_states(customer_ids: List[int]) -> CustomerStateManager:
     """
     Initialize customer state manager for simulation
     
     Args:
-        n_customers: Number of customers
+        customer_ids: List of customer IDs
     
     Returns:
         CustomerStateManager instance
     """
-    return CustomerStateManager(n_customers)
-
+    return CustomerStateManager(customer_ids)
 
 def get_depletion_rates_by_assortment() -> Dict[str, float]:
     """

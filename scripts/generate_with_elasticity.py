@@ -33,52 +33,14 @@ from retailsynth.generators.main_generator import EnhancedRetailSynthV4_1
 
 def main():
     """Main execution function"""
-    parser = argparse.ArgumentParser(
-        description="Generate synthetic transactions with elasticity models"
-    )
-    parser.add_argument(
-        '--elasticity-dir',
-        type=str,
-        default='data/processed/elasticity',
-        help='Directory containing learned elasticity parameters'
-    )
-    parser.add_argument(
-        '--product-catalog',
-        type=str,
-        default='data/processed/product_catalog/representative_catalog.parquet',
-        help='Path to product catalog'
-    )
-    parser.add_argument(
-        '--output',
-        type=str,
-        default='outputs/synthetic_data_with_elasticity',
-        help='Output directory for generated data'
-    )
-    parser.add_argument(
-        '--n-customers',
-        type=int,
-        default=5000,
-        help='Number of customers to generate'
-    )
-    parser.add_argument(
-        '--n-products',
-        type=int,
-        default=1000,
-        help='Number of products to use from catalog'
-    )
-    parser.add_argument(
-        '--weeks',
-        type=int,
-        default=52,
-        help='Number of weeks to simulate'
-    )
-    parser.add_argument(
-        '--random-seed',
-        type=int,
-        default=42,
-        help='Random seed for reproducibility'
-    )
-    
+    parser = argparse.ArgumentParser(description="Generate synthetic transactions with elasticity models")
+    parser.add_argument('--elasticity-dir', type=str, default='data/processed/elasticity', help='Directory containing learned elasticity parameters')
+    parser.add_argument('--product-catalog', type=str, default='data/processed/product_catalog/product_catalog_20k.parquet', help='Path to product catalog')
+    parser.add_argument('--output', type=str, default='outputs/synthetic_data_with_elasticity', help='Output directory for generated data')
+    parser.add_argument('--n-customers', type=int, default=5000, help='Number of customers to generate')
+    parser.add_argument('--n-products', type=int, default=15000, help='Number of products to use from catalog')
+    parser.add_argument('--weeks', type=int, default=104, help='Number of weeks to simulate')
+    parser.add_argument('--random-seed', type=int, default=42, help='Random seed for reproducibility')
     args = parser.parse_args()
     
     print("="*70)
@@ -86,7 +48,7 @@ def main():
     print("="*70)
     print(f"\nConfiguration:")
     print(f"  Customers: {args.n_customers:,}")
-    print(f"  Products: {args.n_products:,}")
+    print(f"  Products: {args.n_products:,}")   
     print(f"  Weeks: {args.weeks}")
     print(f"  Elasticity models: {args.elasticity_dir}")
     print(f"  Output: {args.output}")
@@ -96,26 +58,27 @@ def main():
     print("STEP 1: Configuring RetailSynth")
     print("="*70)
     
-    config = EnhancedRetailConfig(
-        n_customers=args.n_customers,
-        n_products=args.n_products,
-        n_stores=10,
-        simulation_weeks=args.weeks,
-        random_seed=args.random_seed,
-        
-        # Use real catalog
-        use_real_catalog=True,
-        product_catalog_path=args.product_catalog,
-        
-        # Enable all temporal dynamics
-        enable_temporal_dynamics=True,
-        enable_customer_drift=True,
-        enable_product_lifecycle=True,
-        enable_store_loyalty=True,
-        
-        # Region for seasonality
-        region='US'
-    )
+    config = EnhancedRetailConfig(n_customers=args.n_customers,
+                                  n_products=args.n_products,
+                                  n_stores=10,
+                                  simulation_weeks=args.weeks,
+                                  random_seed=args.random_seed,
+                                  
+                                  # Use real catalog
+                                  use_real_catalog=True,
+                                  product_catalog_path=args.product_catalog,
+                                  
+                                  # Enable temporal dynamics (but NOT product lifecycle)
+                                  enable_temporal_dynamics=True,
+                                  enable_customer_drift=True,
+                                  enable_product_lifecycle=False,  # Disabled: causes issues with basket composition
+                                  enable_store_loyalty=True,
+                                  
+                                  # Sprint 1.4: TEMPORARILY DISABLE basket composition for debugging
+                                  enable_basket_composition=True,  # TODO: Re-enable after fixing 0 transactions issue
+                                  
+                                  # Region for seasonality
+                                  region='US')
     
     # Step 2: Initialize generator
     print(f"\n{'='*70}")
@@ -124,21 +87,21 @@ def main():
     
     generator = EnhancedRetailSynthV4_1(config)
     
-    # Step 3: Generate base datasets (customers, products, stores)
+    # Step 3: Generate base datasets FIRST (customers, products, stores - NO transactions yet)
     print(f"\n{'='*70}")
-    print("STEP 3: Generating Base Datasets")
+    print("STEP 3: Generating Base Datasets (Customers, Products, Stores)")
     print("="*70)
     
-    datasets = generator.generate_all_datasets()
+    generator.generate_base_datasets()
     
-    # Step 4: Load elasticity models (NEW - Sprint 2)
+    # Step 4: Load elasticity models AFTER products are generated (NEW - Sprint 2)
     print(f"\n{'='*70}")
     print("STEP 4: Loading Elasticity Models")
     print("="*70)
     
     elasticity_path = Path(args.elasticity_dir)
     if elasticity_path.exists():
-        generator.load_elasticity_models(args.elasticity_dir)
+        generator.load_elasticity_models(args.elasticity_dir, generator.datasets['products'])
         print("\n✅ Elasticity models loaded successfully!")
         print("\nElasticity features enabled:")
         print("  ✅ HMM price dynamics (realistic promotions)")
@@ -150,9 +113,16 @@ def main():
         print("\n💡 To use elasticity models, first run:")
         print(f"   python scripts/learn_price_elasticity.py")
     
-    # Step 5: Save datasets
+    # Step 5: Complete dataset generation (transactions with elasticity models)
     print(f"\n{'='*70}")
-    print("STEP 5: Saving Datasets")
+    print("STEP 5: Generating Transactions with Elasticity")
+    print("="*70)
+    
+    datasets = generator.generate_all_datasets()
+    
+    # Step 6: Save datasets
+    print(f"\n{'='*70}")
+    print("STEP 6: Saving Datasets")
     print("="*70)
     
     output_dir = Path(args.output)
@@ -164,9 +134,9 @@ def main():
         dataset_df.to_parquet(output_path, index=False)
         print(f"   ✅ Saved {dataset_name}: {len(dataset_df):,} rows → {output_path}")
     
-    # Step 6: Generate summary report
+    # Step 7: Generate summary report
     print(f"\n{'='*70}")
-    print("STEP 6: Summary Report")
+    print("STEP 7: Summary Report")
     print("="*70)
     
     transactions = datasets['transactions']

@@ -11,6 +11,8 @@ from retailsynth.engines import MarketDynamicsEngine, TemporalCustomerDriftEngin
 from retailsynth.engines.price_hmm import PriceStateHMM
 from retailsynth.engines.cross_price_elasticity import CrossPriceElasticityEngine
 from retailsynth.engines.arc_elasticity import ArcPriceElasticityEngine
+from retailsynth.engines.customer_state import CustomerStateManager, initialize_customer_states, get_depletion_rates_by_assortment
+from retailsynth.engines.purchase_history_engine import PurchaseHistoryEngine
 from retailsynth.utils import RealisticCategoryHierarchy
 from retailsynth.generators.customer_generator import CustomerGenerator
 from retailsynth.generators.product_generator import ProductGenerator
@@ -19,8 +21,11 @@ from retailsynth.generators.market_context_generator import MarketContextGenerat
 from retailsynth.generators.transaction_generator import ComprehensiveTransactionGenerator
 from retailsynth.catalog import HierarchyMapper  
 
+# Sprint 1.4: Import basket composition component   
+from retailsynth.engines.basket_composer import BasketComposer
+
 # ============================================================================
-# ENHANCED RETAILSYNTH V4.1 (with Real Product Catalog)
+# ENHANCED RETAILSYNTH V4.1 (with Real Product Catalog + Purchase History)
 # ============================================================================
 
 class EnhancedRetailSynthV4_1:
@@ -32,6 +37,11 @@ class EnhancedRetailSynthV4_1:
     - Uses real category hierarchy (Department → Commodity → Sub-Commodity)
     - Preserves real brand names, manufacturers, and price distributions
     - Product archetypes based on actual purchase behavior
+    
+    NEW in Sprint 1.3:
+    - Purchase history tracking (brand loyalty, habits, inventory)
+    - State-dependent shopping behavior
+    - Realistic repeat purchase patterns
     """
     def __init__(self, config: EnhancedRetailConfig):
         self.config = config
@@ -43,7 +53,7 @@ class EnhancedRetailSynthV4_1:
         random.seed(config.random_seed)
         
         print(f"\n{'='*70}")
-        print(f"🚀 Enhanced RetailSynth v4.1 - REAL CATALOG EDITION")
+        print(f"🚀 Enhanced RetailSynth v4.1 - REAL CATALOG + PURCHASE HISTORY")
         print(f"{'='*70}")
         print(f"   Configuration:")
         print(f"   • Customers: {config.n_customers:,}")
@@ -55,6 +65,7 @@ class EnhancedRetailSynthV4_1:
         print(f"   • Customer Drift: ✅ Enabled")
         print(f"   • Product Lifecycle: ✅ Enabled")
         print(f"   • Store Loyalty: ✅ Enabled")
+        print(f"   • Purchase History: ✅ Enabled (Sprint 1.3)")
         
         # Load real product catalog (NEW - Sprint 1.1)
         if config.use_real_catalog:
@@ -75,6 +86,18 @@ class EnhancedRetailSynthV4_1:
         # Temporal dynamics engines
         if config.enable_temporal_dynamics:
             self.seasonality_engine = SeasonalityEngine(region=config.region)
+        
+        # Sprint 2: Elasticity models (initialized via load_elasticity_models)
+        self.price_hmm = None
+        self.cross_price_engine = None
+        self.arc_elasticity_engine = None
+
+        # Sprint 1.3: Purchase history components (initialized later)
+        self.state_manager = None
+        self.history_engine = None
+
+        # Sprint 1.4: Basket composer (initialized later)
+        self.basket_composer = None
         
         self.datasets = {}
         self.pricing_history = []
@@ -122,31 +145,136 @@ class EnhancedRetailSynthV4_1:
             print(f"\n💡 To fix this, run:")
             print(f"   python scripts/build_product_catalog.py")
             raise
-    
-    def _extract_brand_portfolio(self) -> Dict:
-        """Extract brand portfolio from real catalog"""
-        brands = {}
+
+    def load_elasticity_models(self, elasticity_dir: str, products: pd.DataFrame):
+        """
+        Load learned elasticity models from Sprint 2
         
-        for dept in self.real_products['DEPARTMENT'].unique():
-            dept_products = self.real_products[self.real_products['DEPARTMENT'] == dept]
-            dept_brands = dept_products['BRAND'].unique().tolist()
-            brands[dept] = dept_brands[:20]  # Top 20 brands per department
+        Args:
+            elasticity_dir: Directory containing elasticity model files
+                - price_hmm_model.pkl: HMM price dynamics
+                - cross_elasticity_matrix.parquet: Cross-price effects
+                - arc_elasticity_params.parquet: Arc elasticity parameters
+            products: Products DataFrame (needed to initialize engines)
+        """
+        elasticity_path = Path(elasticity_dir)
         
-        return brands
-    
+        print(f"\n🔧 Loading elasticity models from {elasticity_dir}...")
+        
+        # 1. Load HMM price model
+        hmm_path = elasticity_path / 'hmm_parameters.pkl'
+        if hmm_path.exists():
+            try:
+                import pickle
+                
+                # Load the saved parameters
+                with open(hmm_path, 'rb') as f:
+                    hmm_params = pickle.load(f)
+                
+                # Instantiate PriceStateHMM class with products
+                self.price_hmm = PriceStateHMM(products_df=products, n_states=4)
+                
+                # Load the learned parameters into the instance
+                self.price_hmm.transition_matrices = hmm_params['transition_matrices']
+                self.price_hmm.emission_distributions = hmm_params['emission_distributions']
+                self.price_hmm.initial_state_probs = hmm_params['initial_state_probs']
+                
+                print(f"   ✅ Loaded HMM model: {len(self.price_hmm.transition_matrices):,} products")
+            except Exception as e:
+                print(f"   ⚠️  Failed to load HMM model: {e}")
+                self.price_hmm = None
+        else:
+            print(f"   ⚠️  HMM model not found: {hmm_path}")
+            self.price_hmm = None
+        
+        # 2. Load cross-price elasticity engine
+        cross_matrix_path = elasticity_path / 'cross_elasticity/cross_elasticity_matrix.npz'
+        if cross_matrix_path.exists():
+            try:
+                cross_matrix = np.load(cross_matrix_path)
+                
+                # Initialize engine with products DataFrame
+                self.cross_price_engine = CrossPriceElasticityEngine(products_df=products)
+                self.cross_price_engine.cross_elasticity_matrix = cross_matrix
+                
+                # Load substitute/complement groups if available
+                groups_path = elasticity_path / 'cross_elasticity'
+                self.cross_price_engine.substitute_groups = pd.read_csv(groups_path / 'substitute_groups.csv', index_col=0)
+                self.cross_price_engine.complement_pairs = pd.read_csv(groups_path / 'complement_pairs.csv', index_col=0)
+                
+                print(f"   ✅ Loaded cross-price elasticity matrix: {len(cross_matrix):,} pairs")
+                print(f"   ✅ Loaded substitute groups: {len(self.cross_price_engine.substitute_groups):,}")
+                print(f"   ✅ Loaded complement pairs: {len(self.cross_price_engine.complement_pairs):,}")
+            except Exception as e:
+                print(f"   ⚠️  Failed to load cross-price elasticity: {e}")
+                self.cross_price_engine = None
+        else:
+            print(f"   ⚠️  Cross-price elasticity not found: {cross_matrix_path}")
+            self.cross_price_engine = None
+        
+        # 3. Load arc elasticity parameters
+        arc_path = elasticity_path / 'arc_elasticity_params.parquet'
+        if arc_path.exists():
+            try:
+                arc_params = pd.read_parquet(arc_path)
+                
+                # Initialize engine with products DataFrame
+                self.arc_elasticity_engine = ArcPriceElasticityEngine(products_df=products)
+                self.arc_elasticity_engine.product_elasticities = dict(zip(
+                    arc_params['product_id'],
+                    arc_params['arc_elasticity']
+                ))
+                
+                print(f"   ✅ Loaded arc elasticity: {len(arc_params):,} products")
+            except Exception as e:
+                print(f"   ⚠️  Failed to load arc elasticity: {e}")
+                self.arc_elasticity_engine = None
+        else:
+            print(f"   ⚠️  Arc elasticity not found: {arc_path}")
+            self.arc_elasticity_engine = None
+
     def generate_all_datasets(self) -> Dict[str, pd.DataFrame]:
         """Generate all datasets with comprehensive temporal dynamics"""
         
         start_time = datetime.now()
         
+        # Generate base datasets first (if not already generated)
+        if 'products' not in self.datasets or len(self.datasets.get('products', [])) == 0:
+            self.generate_base_datasets()
+        else:
+            print(f"\n✅ Base datasets already generated, skipping to transaction generation...")
+        
+        # Step 7: Generate transactions with full temporal dynamics
+        print(f"\n🛒 Step 7/7: Generating transactions with temporal dynamics...")
+        print(f"   Expected time: ~{self.config.simulation_weeks * 0.2:.0f}-{self.config.simulation_weeks * 0.4:.0f} minutes")
+        step_start = datetime.now()
+        transaction_data = self._generate_transactions_with_temporal_dynamics()
+        self.datasets['transactions'] = transaction_data['transactions']
+        self.datasets['transaction_items'] = transaction_data['transaction_items']
+        print(f"   ✅ Complete in {(datetime.now() - step_start).total_seconds():.1f}s")
+        
+        # Business performance
+        print(f"\n📈 Calculating business performance...")
+        self.datasets['business_performance'] = self._generate_business_performance()
+        
+        total_time = (datetime.now() - start_time).total_seconds()
+        print(f"\n✅ All datasets generated in {total_time/60:.1f} minutes")
+        
+        return self.datasets
+    
+    def generate_base_datasets(self):
+        """
+        Generate base datasets (customers, products, stores, market context) WITHOUT transactions.
+        This allows elasticity models to be loaded before transaction generation.
+        """
         # Step 1: Generate customers
-        print(f"\n👥 Step 1/7: Generating {self.config.n_customers:,} customers...")
+        print(f"\n👥 Step 1/6: Generating {self.config.n_customers:,} customers...")
         step_start = datetime.now()
         self.datasets['customers'] = CustomerGenerator.generate_customers_vectorized(self.config, self.calibration_engine)
         print(f"   ✅ Complete in {(datetime.now() - step_start).total_seconds():.1f}s")
         
         # Step 2: Generate/Load products (MODIFIED - Sprint 1.1)
-        print(f"\n📦 Step 2/7: {'Loading' if self.config.use_real_catalog else 'Generating'} {self.config.n_products:,} products...")
+        print(f"\n📦 Step 2/6: {'Loading' if self.config.use_real_catalog else 'Generating'} {self.config.n_products:,} products...")
         step_start = datetime.now()
         
         if self.config.use_real_catalog and self.real_products is not None:
@@ -170,23 +298,25 @@ class EnhancedRetailSynthV4_1:
         print(f"   ✅ Complete in {(datetime.now() - step_start).total_seconds():.1f}s")
         
         # Step 3: Generate stores
-        print(f"\n🏪 Step 3/7: Generating {self.config.n_stores} stores...")
+        print(f"\n🏪 Step 3/6: Generating {self.config.n_stores} stores...")
         step_start = datetime.now()
         self.datasets['stores'] = StoreGenerator.generate_stores(self.config)
         print(f"   ✅ Complete in {(datetime.now() - step_start).total_seconds():.1f}s")
         
         # Step 4: Generate market context
-        print(f"\n💰 Step 4/7: Generating market context...")
+        print(f"\n💰 Step 4/6: Generating market context...")
         step_start = datetime.now()
         self.datasets['market_context'] = MarketContextGenerator.generate_market_context(self.config)
         print(f"   ✅ Complete in {(datetime.now() - step_start).total_seconds():.1f}s")
         
         # Step 5: Initialize temporal engines
-        print(f"\n🔧 Step 5/7: Initializing temporal dynamics engines...")
+        print(f"\n🔧 Step 5/6: Initializing temporal dynamics engines...")
         step_start = datetime.now()
         
         if self.config.enable_temporal_dynamics:
             self.pricing_engine = PricingEvolutionEngine(len(self.datasets['products']))
+
+        if self.config.enable_product_lifecycle:
             self.lifecycle_engine = ProductLifecycleEngine(
                 self.datasets['products'], 
                 self.config
@@ -201,64 +331,50 @@ class EnhancedRetailSynthV4_1:
                 self.datasets['stores']
             )
         
+        # Sprint 1.3: Initialize purchase history components
+        self.state_manager = CustomerStateManager(self.datasets['customers']['customer_id'].tolist())
+        self.history_engine = PurchaseHistoryEngine(products=self.datasets['products'], loyalty_weight=self.config.loyalty_weight, 
+                                                    habit_weight=self.config.habit_weight, inventory_weight=self.config.inventory_weight, 
+                                                    variety_weight=self.config.variety_weight, price_memory_weight=self.config.price_memory_weight)
+        print(f"   • Purchase History: ✅ Enabled")
+
+        # Sprint 1.4: Initialize basket composer
+        if self.config.enable_basket_composition and self.config.use_real_catalog:
+            self.basket_composer = BasketComposer(products=self.datasets['products'], config=self.config, enable_complements=True, enable_substitutes=True)
+            print(f"   • Basket Composition: ✅ Enabled")
+        
         print(f"   ✅ Complete in {(datetime.now() - step_start).total_seconds():.1f}s")
         
         # Step 6: Pre-compute matrices for GPU
-        print(f"\n🔧 Step 6/7: Pre-computing GPU matrices...")
+        print(f"\n🔧 Step 6/6: Pre-computing GPU matrices...")
         step_start = datetime.now()
         self.precomp = VectorizedPreComputationEngine(
             self.datasets['customers'], 
             self.datasets['products']
         )
         print(f"   ✅ Complete in {(datetime.now() - step_start).total_seconds():.1f}s")
-        
-        # Step 7: Generate transactions with full temporal dynamics
-        print(f"\n🛒 Step 7/7: Generating transactions with temporal dynamics...")
-        print(f"   Expected time: ~{self.config.simulation_weeks * 0.2:.0f}-{self.config.simulation_weeks * 0.4:.0f} minutes")
-        step_start = datetime.now()
-        transaction_data = self._generate_transactions_with_temporal_dynamics()
-        self.datasets['transactions'] = transaction_data['transactions']
-        self.datasets['transaction_items'] = transaction_data['transaction_items']
-        print(f"   ✅ Complete in {(datetime.now() - step_start).total_seconds():.1f}s")
-        
-        # Business performance
-        print(f"\n📈 Calculating business performance...")
-        self.datasets['business_performance'] = self._generate_business_performance()
-        
-        # Temporal metadata
-        if self.config.enable_temporal_dynamics:
-            self.datasets['temporal_metadata'] = self._create_temporal_metadata()
-        
-        total_time = (datetime.now() - start_time).total_seconds()
-        
-        print(f"\n{'='*70}")
-        print(f"✅ GENERATION COMPLETE!")
-        print(f"{'='*70}")
-        print(f"   Total time: {total_time/60:.1f} minutes")
-        print(f"   Customers: {len(self.datasets['customers']):,}")
-        print(f"   Products: {len(self.datasets['products']):,}")
-        print(f"   Stores: {len(self.datasets['stores']):,}")
-        print(f"   Transactions: {len(self.datasets['transactions']):,}")
-        print(f"   Transaction Items: {len(self.datasets['transaction_items']):,}")
-        print(f"   Performance: {len(self.datasets['transactions']) / (total_time/60):.0f} transactions/minute")
-        
-        return self.datasets
-        
+
     def _generate_transactions_with_temporal_dynamics(self) -> Dict[str, pd.DataFrame]:
         """
-        Generate transactions with FULL temporal dynamics (v3.6).
-        Includes customer drift, product lifecycle, and store loyalty.
+        Generate transactions with FULL temporal dynamics (v3.6 + Sprint 1.3).
+        Includes customer drift, product lifecycle, store loyalty, and purchase history.
         """
         all_transactions = []
         all_transaction_items = []
         
-        # Initialize transaction generator with store loyalty
+        # Initialize transaction generator with store loyalty AND purchase history (Sprint 1.3)
         transaction_gen = ComprehensiveTransactionGenerator(
             self.precomp,
             self.utility_engine,
             self.loyalty_engine if self.config.enable_store_loyalty else None,
-            self.config
+            self.config,
+            state_manager=self.state_manager,  # Sprint 1.3
+            history_engine=self.history_engine,  # Sprint 1.3
+            basket_composer=self.basket_composer  # Sprint 1.4
         )
+        
+        # Get depletion rates for inventory tracking (Sprint 1.3)
+        depletion_rates = get_depletion_rates_by_assortment()
         
         # Track active products (changes with lifecycle)
         active_products = self.datasets['products'].copy()
@@ -276,6 +392,10 @@ class EnhancedRetailSynthV4_1:
 
                 # Update pre-computed matrices
                 self.precomp.update_from_drift(self.datasets['customers'])
+            
+            # Sprint 1.3: Deplete inventory for all customers
+            if week > 1:
+                self.state_manager.deplete_all_inventory(depletion_rates)
             
             # 2. Update product lifecycle (v3.6)
             if self.config.enable_product_lifecycle and week > 1:
@@ -343,8 +463,8 @@ class EnhancedRetailSynthV4_1:
         
         performance_data = []
         
-        for week in sorted(transactions['week_number'].unique()):
-            week_transactions = transactions[transactions['week_number'] == week]
+        for week_num in sorted(transactions['week_number'].unique()):
+            week_transactions = transactions[transactions['week_number'] == week_num]
             
             for store_id in sorted(transactions['store_id'].unique()):
                 store_transactions = week_transactions[week_transactions['store_id'] == store_id]
@@ -353,16 +473,16 @@ class EnhancedRetailSynthV4_1:
                     continue
                 
                 performance_data.append({
-                    'week_number': week,
+                    'week_number': week_num,
                     'store_id': store_id,
                     'total_transactions': len(store_transactions),
                     'total_revenue': store_transactions['total_revenue'].sum(),
                     'total_margin': store_transactions['total_margin'].sum(),
                     'total_discount': store_transactions['total_discount'].sum(),
-                    'avg_basket_size': store_transactions['total_items_count'].mean(),
+                    'avg_basket_size': store_transactions['total_items'].mean(),
                     'avg_basket_value': store_transactions['total_revenue'].mean(),
                     'avg_satisfaction': store_transactions['satisfaction_score'].mean(),
-                    'promotion_penetration': (store_transactions['promotional_items_count'] > 0).sum() / len(store_transactions),
+                    'promotion_penetration': (store_transactions['promo_items'] > 0).sum() / len(store_transactions),
                     'created_at': datetime.now()
                 })
         
@@ -443,6 +563,17 @@ class EnhancedRetailSynthV4_1:
         
         return current_prices, price_states
 
+    def _extract_brand_portfolio(self) -> Dict:
+        """Extract brand portfolio from real catalog"""
+        brands = {}
+        
+        for dept in self.real_products['DEPARTMENT'].unique():
+            dept_products = self.real_products[self.real_products['DEPARTMENT'] == dept]
+            dept_brands = dept_products['BRAND'].unique().tolist()
+            brands[dept] = dept_brands[:20]  # Top 20 brands per department
+        
+        return brands
+    
 # ============================================================================
 # VISUALIZATION TOOLS
 # ============================================================================

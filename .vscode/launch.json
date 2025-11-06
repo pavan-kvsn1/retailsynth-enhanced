@@ -5,7 +5,7 @@
             "name": "Python: Debug with Specific Venv",
             "type": "debugpy",
             "request": "launch",
-            "program": "${workspaceFolder}/scripts/learn_price_elasticity.py",
+            "program": "${workspaceFolder}/scripts/generate_with_elasticity.py",
             "console": "integratedTerminal",
             "justMyCode": true,
             // 🚨 Key step: Set the absolute path to your interpreter executable
