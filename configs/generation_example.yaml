@@ -1,0 +1,75 @@
+# Example YAML for scripts/generate_with_elasticity.py
+#
+# Usage:
+#   python scripts/generate_with_elasticity.py --config configs/generation_example.yaml
+#
+# Notes on precedence:
+# - Values under `generator` control paths and high-level IO (elasticity_dir, output, product_catalog)
+# - Values under `config` map directly to EnhancedRetailConfig dataclass
+# - If present in YAML, n_customers/n_products/simulation_weeks are used; otherwise CLI defaults are used
+# - CLI --random-seed always overrides YAML
+
+# High-level generator settings (IO paths, directories)
+generator:
+  elasticity_dir: data/processed/elasticity
+  product_catalog: data/processed/product_catalog/product_catalog_20k.parquet
+  output: outputs/synthetic_tuned
+
+# EnhancedRetailConfig fields
+config:
+  # Scale
+  n_customers: 10000
+  n_products: 15000
+  simulation_weeks: 52
+  n_stores: 10
+  random_seed: 42  # CLI --random-seed will override this
+
+  # Catalog and toggles
+  use_real_catalog: true
+  product_catalog_path: data/processed/product_catalog/product_catalog_20k.parquet
+  enable_temporal_dynamics: true
+  enable_customer_drift: true
+  enable_product_lifecycle: false
+  enable_store_loyalty: true
+  enable_basket_composition: true
+  region: US
+
+  # === Tier 1 (tuned) ===
+  # Visit behavior
+  base_visit_probability: 0.15   # map from best_params.base_visit_prob
+
+  # Basket size
+  basket_size_lambda: 5.5
+
+  # Quantity distribution
+  quantity_mean: 1.8
+  quantity_std: 0.9
+  quantity_max: 10
+
+  # Temporal dynamics
+  inventory_depletion_rate: 0.10
+  replenishment_threshold: 0.30
+
+  # Basket composition
+  complement_probability: 0.40
+  substitute_avoidance: 0.80
+  category_diversity_weight: 0.30
+
+  # Purchase history weights
+  loyalty_weight: 0.30
+  habit_weight: 0.40
+  inventory_weight: 0.50
+  variety_weight: 0.20
+  price_memory_weight: 0.10
+
+  # === Tier 2 (optional tuned) ===
+  promotion_sensitivity_mean: 0.50     # map from best_params.promo_sensitivity_mean
+  promotion_sensitivity_std: 0.20      # map from best_params.promo_sensitivity_std
+  promotion_quantity_boost: 1.50       # map from best_params.promo_quantity_boost
+
+  store_loyalty_weight: 0.60
+  store_switching_probability: 0.15
+  distance_weight: 0.40
+  satisfaction_weight: 0.60
+
+  drift_rate: 0.05

@@ -30,6 +30,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent / 'src'))
 from retailsynth.config import EnhancedRetailConfig
 from retailsynth.generators.main_generator import EnhancedRetailSynthV4_1
 
+try:
+    import yaml
+except ImportError:
+    yaml = None
 
 def main():
     """Main execution function"""
@@ -41,44 +45,82 @@ def main():
     parser.add_argument('--n-products', type=int, default=15000, help='Number of products to use from catalog')
     parser.add_argument('--weeks', type=int, default=104, help='Number of weeks to simulate')
     parser.add_argument('--random-seed', type=int, default=42, help='Random seed for reproducibility')
+    parser.add_argument('--config', type=str, default=None, help='Path to YAML config (see configs/generation_example.yaml)')
     args = parser.parse_args()
+    
+    # Resolve effective configuration from YAML (if provided) and CLI
+    effective_n_customers = args.n_customers
+    effective_n_products = args.n_products
+    effective_weeks = args.weeks
+    elasticity_dir = args.elasticity_dir
+    output_dir_str = args.output
+    product_catalog_path = args.product_catalog
+    _yaml_config = None
+    
+    if args.config:
+        if yaml is None:
+            print("\n⚠️  PyYAML is not installed. Install with: pip install pyyaml")
+            sys.exit(1)
+        with open(args.config, 'r') as f:
+            data = yaml.safe_load(f) or {}
+        generator_settings = data.get('generator', {})
+        config_settings = data.get('config', {k: v for k, v in data.items() if k != 'generator'})
+        _yaml_config = config_settings
+        
+        # Apply YAML to effective values
+        effective_n_customers = config_settings.get('n_customers', effective_n_customers)
+        effective_n_products = config_settings.get('n_products', effective_n_products)
+        effective_weeks = config_settings.get('simulation_weeks', effective_weeks)
+        elasticity_dir = generator_settings.get('elasticity_dir', elasticity_dir)
+        output_dir_str = generator_settings.get('output', output_dir_str)
+        product_catalog_path = generator_settings.get('product_catalog', config_settings.get('product_catalog_path', product_catalog_path))
     
     print("="*70)
     print("RETAILSYNTH v4.1 WITH ELASTICITY MODELS (SPRINT 2)")
     print("="*70)
     print(f"\nConfiguration:")
-    print(f"  Customers: {args.n_customers:,}")
-    print(f"  Products: {args.n_products:,}")   
-    print(f"  Weeks: {args.weeks}")
-    print(f"  Elasticity models: {args.elasticity_dir}")
-    print(f"  Output: {args.output}")
+    print(f"  Customers: {effective_n_customers:,}")
+    print(f"  Products: {effective_n_products:,}")   
+    print(f"  Weeks: {effective_weeks}")
+    print(f"  Elasticity models: {elasticity_dir}")
+    print(f"  Output: {output_dir_str}")
     
     # Step 1: Configure RetailSynth
     print(f"\n{'='*70}")
     print("STEP 1: Configuring RetailSynth")
     print("="*70)
     
-    config = EnhancedRetailConfig(n_customers=args.n_customers,
-                                  n_products=args.n_products,
-                                  n_stores=10,
-                                  simulation_weeks=args.weeks,
-                                  random_seed=args.random_seed,
-                                  
-                                  # Use real catalog
-                                  use_real_catalog=True,
-                                  product_catalog_path=args.product_catalog,
-                                  
-                                  # Enable temporal dynamics (but NOT product lifecycle)
-                                  enable_temporal_dynamics=True,
-                                  enable_customer_drift=True,
-                                  enable_product_lifecycle=False,  # Disabled: causes issues with basket composition
-                                  enable_store_loyalty=True,
-                                  
-                                  # Sprint 1.4: TEMPORARILY DISABLE basket composition for debugging
-                                  enable_basket_composition=True,  # TODO: Re-enable after fixing 0 transactions issue
-                                  
-                                  # Region for seasonality
-                                  region='US')
+    if _yaml_config is not None:
+        # Build config from YAML, then enforce effective and script-level values
+        config = EnhancedRetailConfig(**_yaml_config)
+        config.n_customers = effective_n_customers
+        config.n_products = effective_n_products
+        config.simulation_weeks = effective_weeks
+        config.random_seed = args.random_seed  # CLI still controls seed
+        if product_catalog_path:
+            config.product_catalog_path = product_catalog_path
+    else:
+        config = EnhancedRetailConfig(n_customers=effective_n_customers,
+                                      n_products=effective_n_products,
+                                      n_stores=10,
+                                      simulation_weeks=effective_weeks,
+                                      random_seed=args.random_seed,
+                                      
+                                      # Use real catalog
+                                      use_real_catalog=True,
+                                      product_catalog_path=product_catalog_path,
+                                      
+                                      # Enable temporal dynamics (but NOT product lifecycle)
+                                      enable_temporal_dynamics=True,
+                                      enable_customer_drift=True,
+                                      enable_product_lifecycle=False,  # Disabled: causes issues with basket composition
+                                      enable_store_loyalty=True,
+                                      
+                                      # Sprint 1.4: TEMPORARILY DISABLE basket composition for debugging
+                                      enable_basket_composition=True,  # TODO: Re-enable after fixing 0 transactions issue
+                                      
+                                      # Region for seasonality
+                                      region='US')
     
     # Step 2: Initialize generator
     print(f"\n{'='*70}")
@@ -99,16 +141,16 @@ def main():
     print("STEP 4: Loading Elasticity Models")
     print("="*70)
     
-    elasticity_path = Path(args.elasticity_dir)
+    elasticity_path = Path(elasticity_dir)
     if elasticity_path.exists():
-        generator.load_elasticity_models(args.elasticity_dir, generator.datasets['products'])
+        generator.load_elasticity_models(elasticity_dir, generator.datasets['products'])
         print("\n✅ Elasticity models loaded successfully!")
         print("\nElasticity features enabled:")
         print("  ✅ HMM price dynamics (realistic promotions)")
         print("  ✅ Cross-price elasticity (substitution/complementarity)")
         print("  ✅ Arc elasticity (stockpiling/deferral)")
     else:
-        print(f"\n⚠️  Elasticity directory not found: {args.elasticity_dir}")
+        print(f"\n⚠️  Elasticity directory not found: {elasticity_dir}")
         print("   Falling back to simple pricing engine")
         print("\n💡 To use elasticity models, first run:")
         print(f"   python scripts/learn_price_elasticity.py")
@@ -125,7 +167,7 @@ def main():
     print("STEP 6: Saving Datasets")
     print("="*70)
     
-    output_dir = Path(args.output)
+    output_dir = Path(output_dir_str)
     output_dir.mkdir(parents=True, exist_ok=True)
     
     # Save all datasets
@@ -146,7 +188,7 @@ def main():
     print(f"   Customers: {len(datasets['customers']):,}")
     print(f"   Products: {len(datasets['products']):,}")
     print(f"   Stores: {len(datasets['stores']):,}")
-    print(f"   Weeks: {args.weeks}")
+    print(f"   Weeks: {effective_weeks}")
     print(f"\n🛒 Transaction Summary:")
     print(f"   Total transactions: {len(transactions):,}")
     print(f"   Total items sold: {len(transaction_items):,}")
