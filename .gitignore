@@ -17,8 +17,9 @@ src/retailsynth/__pycache__
 src/retailsynth/engines/__pycache__
 
 # Generated analytics and tuning outputs
-outputs/**/*
-!outputs/**/.gitignore
+outputs/*
+!outputs/.gitkeep
+!outputs/.gitignore
 
 # Large data artifacts
 *.parquet
