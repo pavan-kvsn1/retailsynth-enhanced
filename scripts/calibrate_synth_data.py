@@ -6,10 +6,19 @@ This script validates synthetic data against real Dunnhumby data using:
 - Distribution comparisons (histograms, CDFs, Q-Q plots)
 - Key metrics (basket size, revenue, visit frequency)
 
+**Sprint 2 Complete**: Now validates all 7 phases including:
+- Phase 2.1: Pricing-Promo Separation
+- Phase 2.2: Promotional Organization  
+- Phase 2.3: Marketing Signal
+- Phase 2.4: Individual Heterogeneity
+- Phase 2.5: Promotional Response
+- Phase 2.6: Non-linear Utilities (behavioral economics)
+- Phase 2.7: Seasonality Learning (data-driven patterns)
+
 Usage:
     python scripts/calibrate_synth_data.py \
         --real-data data/raw/dunnhumby/transaction_data.csv \
-        --synthetic-data outputs/synthetic_data_with_elasticity/transactions.parquet \
+        --synthetic-data outputs/sprint_2_validation/transaction_items.parquet \
         --output outputs/calibration_report
 
 Based on RetailSynth calibration framework:
@@ -182,6 +191,45 @@ class SynthDataValidator:
             'real_data': real_qty.values,
             'synth_data': synth_qty.values
         }
+    
+    def _validate_sprint_2_features(self) -> dict:
+        """
+        Validate Sprint 2 specific features (Phases 2.6 & 2.7)
+        
+        Phase 2.6: Non-linear utilities (loss aversion, reference prices)
+        Phase 2.7: Seasonality learning (temporal patterns)
+        """
+        sprint2_metrics = {}
+        
+        # Check if we have week_number for seasonality analysis
+        if 'week_number' in self.synthetic_data.columns:
+            # Analyze weekly transaction volume variation
+            synth_weekly = self.synthetic_data.groupby('week_number').size()
+            
+            if len(synth_weekly) > 1:
+                weekly_variation = (synth_weekly.max() - synth_weekly.min()) / synth_weekly.mean()
+                sprint2_metrics['seasonality_variation'] = float(weekly_variation)
+                sprint2_metrics['seasonality_present'] = weekly_variation > 0.1  # >10% variation
+        
+        # Check for promotional response (Phase 2.5)
+        if 'promotion_flag' in self.synthetic_data.columns or 'is_promoted' in self.synthetic_data.columns:
+            promo_col = 'promotion_flag' if 'promotion_flag' in self.synthetic_data.columns else 'is_promoted'
+            promo_qty = self.synthetic_data[self.synthetic_data[promo_col] == 1]['quantity'].mean()
+            regular_qty = self.synthetic_data[self.synthetic_data[promo_col] == 0]['quantity'].mean()
+            
+            if regular_qty > 0:
+                promo_boost = (promo_qty - regular_qty) / regular_qty
+                sprint2_metrics['promo_quantity_boost'] = float(promo_boost)
+                sprint2_metrics['promo_response_present'] = promo_boost > 0.1  # >10% boost
+        
+        # Check for price sensitivity (Phase 2.6 - behavioral economics)
+        if 'unit_price' in self.synthetic_data.columns:
+            # Analyze if lower prices lead to higher quantities (expected with loss aversion)
+            price_qty_corr = self.synthetic_data[['unit_price', 'quantity']].corr().iloc[0, 1]
+            sprint2_metrics['price_quantity_correlation'] = float(price_qty_corr)
+            sprint2_metrics['price_sensitivity_present'] = price_qty_corr < -0.05  # Negative correlation
+        
+        return sprint2_metrics
     
     def generate_report(self, output_dir: Path):
         """Generate calibration report with visualizations"""

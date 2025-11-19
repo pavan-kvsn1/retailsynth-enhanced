@@ -64,101 +64,199 @@ class TripCharacteristics:
     category_diversity: float  # 0.0 = focused, 1.0 = diverse
 
 
-# Industry-standard trip characteristics
-TRIP_CHARACTERISTICS = {
-    TripPurpose.STOCK_UP: TripCharacteristics(
-        basket_size_mean=28.0,
-        basket_size_std=8.0,
-        min_items=15,
-        max_items=50,
-        required_categories=['DAIRY', 'PRODUCE', 'MEAT', 'GROCERY'],
-        optional_categories=['FROZEN', 'BAKERY', 'DELI', 'BEVERAGE', 'SNACKS'],
-        min_categories=5,
-        max_same_product=3,
-        category_diversity=0.8
-    ),
-    
-    TripPurpose.FILL_IN: TripCharacteristics(
-        basket_size_mean=5.5,
-        basket_size_std=2.0,
-        min_items=2,
-        max_items=12,
-        required_categories=['DAIRY', 'PRODUCE'],
-        optional_categories=['BAKERY', 'BEVERAGE', 'SNACKS'],
-        min_categories=2,
-        max_same_product=2,
-        category_diversity=0.4
-    ),
-    
-    TripPurpose.MEAL_PREP: TripCharacteristics(
-        basket_size_mean=12.0,
-        basket_size_std=4.0,
-        min_items=6,
-        max_items=20,
-        required_categories=['MEAT', 'PRODUCE', 'GROCERY'],
-        optional_categories=['DAIRY', 'FROZEN', 'DELI'],
-        min_categories=3,
-        max_same_product=2,
-        category_diversity=0.6
-    ),
-    
-    TripPurpose.CONVENIENCE: TripCharacteristics(
-        basket_size_mean=3.0,
-        basket_size_std=1.5,
-        min_items=1,
-        max_items=6,
-        required_categories=[],  # No required categories
-        optional_categories=['BEVERAGE', 'SNACKS', 'DAIRY', 'BAKERY'],
-        min_categories=1,
-        max_same_product=2,
-        category_diversity=0.2
-    ),
-    
-    TripPurpose.SPECIAL_OCCASION: TripCharacteristics(
-        basket_size_mean=22.0,
-        basket_size_std=7.0,
-        min_items=10,
-        max_items=40,
-        required_categories=['MEAT', 'PRODUCE', 'BEVERAGE'],
-        optional_categories=['FROZEN', 'BAKERY', 'DELI', 'SNACKS', 'DAIRY'],
-        min_categories=4,
-        max_same_product=4,
-        category_diversity=0.7
-    )
-}
-
-
-# Trip purpose probabilities by customer shopping personality
-TRIP_PURPOSE_PROBABILITIES = {
-    'price_anchor': {
-        TripPurpose.STOCK_UP: 0.45,
-        TripPurpose.FILL_IN: 0.30,
-        TripPurpose.MEAL_PREP: 0.15,
-        TripPurpose.CONVENIENCE: 0.05,
-        TripPurpose.SPECIAL_OCCASION: 0.05
-    },
-    'convenience': {
-        TripPurpose.STOCK_UP: 0.15,
-        TripPurpose.FILL_IN: 0.35,
-        TripPurpose.MEAL_PREP: 0.10,
-        TripPurpose.CONVENIENCE: 0.35,
-        TripPurpose.SPECIAL_OCCASION: 0.05
-    },
-    'planned': {
-        TripPurpose.STOCK_UP: 0.40,
-        TripPurpose.FILL_IN: 0.25,
-        TripPurpose.MEAL_PREP: 0.25,
-        TripPurpose.CONVENIENCE: 0.05,
-        TripPurpose.SPECIAL_OCCASION: 0.05
-    },
-    'impulse': {
-        TripPurpose.STOCK_UP: 0.25,
-        TripPurpose.FILL_IN: 0.30,
-        TripPurpose.MEAL_PREP: 0.15,
-        TripPurpose.CONVENIENCE: 0.20,
-        TripPurpose.SPECIAL_OCCASION: 0.10
+    # DEPRECATED: These are now generated from config in TripPurposeSelector.__init__()
+    # Kept for reference but not used
+    _LEGACY_TRIP_CHARACTERISTICS = {
+        # These values were too high - now configurable via EnhancedRetailConfig
+        # STOCK_UP: basket_size_mean=28.0 (was way too high!)
+        # SPECIAL_OCCASION: basket_size_mean=22.0 (was too high!)
+        # See config.trip_*_basket_mean parameters
     }
-}
+
+    _LEGACY_TRIP_PURPOSE_PROBABILITIES = {
+        # These probabilities were too skewed toward large trips
+        # price_anchor: STOCK_UP=0.45 (was too high!)
+        # See config.trip_prob_* parameters
+    }
+
+
+def build_trip_characteristics_from_config(config):
+    """Build TRIP_CHARACTERISTICS dict from config parameters"""
+    return {
+        TripPurpose.STOCK_UP: TripCharacteristics(
+            basket_size_mean=config.trip_stock_up_basket_mean,
+            basket_size_std=config.trip_stock_up_basket_std,
+            min_items=max(1, int(config.trip_stock_up_basket_mean - config.trip_stock_up_basket_std * 2)),
+            max_items=int(config.trip_stock_up_basket_mean + config.trip_stock_up_basket_std * 3),
+            required_categories=['DAIRY', 'PRODUCE', 'MEAT', 'GROCERY'],
+            optional_categories=['FROZEN', 'BAKERY', 'DELI', 'BEVERAGE', 'SNACKS'],
+            min_categories=5,
+            max_same_product=3,
+            category_diversity=0.8
+        ),
+        
+        TripPurpose.FILL_IN: TripCharacteristics(
+            basket_size_mean=config.trip_fill_in_basket_mean,
+            basket_size_std=config.trip_fill_in_basket_std,
+            min_items=max(1, int(config.trip_fill_in_basket_mean - config.trip_fill_in_basket_std * 1.5)),
+            max_items=int(config.trip_fill_in_basket_mean + config.trip_fill_in_basket_std * 2.5),
+            required_categories=['DAIRY', 'PRODUCE'],
+            optional_categories=['BAKERY', 'BEVERAGE', 'SNACKS'],
+            min_categories=2,
+            max_same_product=2,
+            category_diversity=0.4
+        ),
+        
+        TripPurpose.MEAL_PREP: TripCharacteristics(
+            basket_size_mean=config.trip_meal_prep_basket_mean,
+            basket_size_std=config.trip_meal_prep_basket_std,
+            min_items=max(1, int(config.trip_meal_prep_basket_mean - config.trip_meal_prep_basket_std * 2)),
+            max_items=int(config.trip_meal_prep_basket_mean + config.trip_meal_prep_basket_std * 2.5),
+            required_categories=['MEAT', 'PRODUCE', 'GROCERY'],
+            optional_categories=['DAIRY', 'FROZEN', 'DELI'],
+            min_categories=3,
+            max_same_product=2,
+            category_diversity=0.6
+        ),
+        
+        TripPurpose.CONVENIENCE: TripCharacteristics(
+            basket_size_mean=config.trip_convenience_basket_mean,
+            basket_size_std=config.trip_convenience_basket_std,
+            min_items=1,
+            max_items=int(config.trip_convenience_basket_mean + config.trip_convenience_basket_std * 2),
+            required_categories=[],  # No required categories
+            optional_categories=['BEVERAGE', 'SNACKS', 'DAIRY', 'BAKERY'],
+            min_categories=1,
+            max_same_product=2,
+            category_diversity=0.2
+        ),
+        
+        TripPurpose.SPECIAL_OCCASION: TripCharacteristics(
+            basket_size_mean=config.trip_special_basket_mean,
+            basket_size_std=config.trip_special_basket_std,
+            min_items=max(1, int(config.trip_special_basket_mean - config.trip_special_basket_std * 2)),
+            max_items=int(config.trip_special_basket_mean + config.trip_special_basket_std * 3),
+            required_categories=['MEAT', 'PRODUCE', 'BEVERAGE'],
+            optional_categories=['FROZEN', 'BAKERY', 'DELI', 'SNACKS', 'DAIRY'],
+            min_categories=4,
+            max_same_product=4,
+            category_diversity=0.7
+        )
+    }
+
+
+def build_trip_probabilities_from_config(config):
+    """Build TRIP_PURPOSE_PROBABILITIES dict from config parameters"""
+    # Calculate remaining probabilities to ensure they sum to 1.0
+    # If configured values sum > 1.0, normalize them to prevent negative remainders
+    
+    # Price anchor - normalize if needed
+    pa_sum = (config.trip_prob_price_anchor_stock_up + 
+              config.trip_prob_price_anchor_fill_in + 
+              config.trip_prob_price_anchor_convenience)
+    if pa_sum > 1.0:
+        # Normalize to 0.9 to leave 10% for remaining
+        scale = 0.9 / pa_sum
+        pa_stock = config.trip_prob_price_anchor_stock_up * scale
+        pa_fill = config.trip_prob_price_anchor_fill_in * scale
+        pa_conv = config.trip_prob_price_anchor_convenience * scale
+        price_anchor_remaining = 0.1
+    else:
+        pa_stock = config.trip_prob_price_anchor_stock_up
+        pa_fill = config.trip_prob_price_anchor_fill_in
+        pa_conv = config.trip_prob_price_anchor_convenience
+        price_anchor_remaining = 1.0 - pa_sum
+    
+    price_anchor_meal = max(0.0, price_anchor_remaining * 0.6)  # 60% meal prep
+    price_anchor_special = max(0.0, price_anchor_remaining * 0.4)  # 40% special
+    
+    # Convenience - normalize if needed
+    conv_sum = (config.trip_prob_convenience_convenience + 
+                config.trip_prob_convenience_fill_in + 
+                config.trip_prob_convenience_stock_up)
+    if conv_sum > 1.0:
+        scale = 0.9 / conv_sum
+        conv_conv = config.trip_prob_convenience_convenience * scale
+        conv_fill = config.trip_prob_convenience_fill_in * scale
+        conv_stock = config.trip_prob_convenience_stock_up * scale
+        convenience_remaining = 0.1
+    else:
+        conv_conv = config.trip_prob_convenience_convenience
+        conv_fill = config.trip_prob_convenience_fill_in
+        conv_stock = config.trip_prob_convenience_stock_up
+        convenience_remaining = 1.0 - conv_sum
+    
+    convenience_meal = max(0.0, convenience_remaining * 0.5)
+    convenience_special = max(0.0, convenience_remaining * 0.5)
+    
+    # Planned - normalize if needed
+    plan_sum = (config.trip_prob_planned_stock_up + 
+                config.trip_prob_planned_meal_prep + 
+                config.trip_prob_planned_fill_in)
+    if plan_sum > 1.0:
+        scale = 0.9 / plan_sum
+        plan_stock = config.trip_prob_planned_stock_up * scale
+        plan_meal = config.trip_prob_planned_meal_prep * scale
+        plan_fill = config.trip_prob_planned_fill_in * scale
+        planned_remaining = 0.1
+    else:
+        plan_stock = config.trip_prob_planned_stock_up
+        plan_meal = config.trip_prob_planned_meal_prep
+        plan_fill = config.trip_prob_planned_fill_in
+        planned_remaining = 1.0 - plan_sum
+    
+    planned_convenience = max(0.0, planned_remaining * 0.4)
+    planned_special = max(0.0, planned_remaining * 0.6)
+    
+    # Impulse - normalize if needed
+    imp_sum = (config.trip_prob_impulse_convenience + 
+               config.trip_prob_impulse_fill_in + 
+               config.trip_prob_impulse_special)
+    if imp_sum > 1.0:
+        scale = 0.9 / imp_sum
+        imp_conv = config.trip_prob_impulse_convenience * scale
+        imp_fill = config.trip_prob_impulse_fill_in * scale
+        imp_special = config.trip_prob_impulse_special * scale
+        impulse_remaining = 0.1
+    else:
+        imp_conv = config.trip_prob_impulse_convenience
+        imp_fill = config.trip_prob_impulse_fill_in
+        imp_special = config.trip_prob_impulse_special
+        impulse_remaining = 1.0 - imp_sum
+    
+    impulse_stock = max(0.0, impulse_remaining * 0.4)
+    impulse_meal = max(0.0, impulse_remaining * 0.6)
+    
+    return {
+        'price_anchor': {
+            TripPurpose.STOCK_UP: pa_stock,
+            TripPurpose.FILL_IN: pa_fill,
+            TripPurpose.CONVENIENCE: pa_conv,
+            TripPurpose.MEAL_PREP: price_anchor_meal,
+            TripPurpose.SPECIAL_OCCASION: price_anchor_special
+        },
+        'convenience': {
+            TripPurpose.CONVENIENCE: conv_conv,
+            TripPurpose.FILL_IN: conv_fill,
+            TripPurpose.STOCK_UP: conv_stock,
+            TripPurpose.MEAL_PREP: convenience_meal,
+            TripPurpose.SPECIAL_OCCASION: convenience_special
+        },
+        'planned': {
+            TripPurpose.STOCK_UP: plan_stock,
+            TripPurpose.MEAL_PREP: plan_meal,
+            TripPurpose.FILL_IN: plan_fill,
+            TripPurpose.CONVENIENCE: planned_convenience,
+            TripPurpose.SPECIAL_OCCASION: planned_special
+        },
+        'impulse': {
+            TripPurpose.CONVENIENCE: imp_conv,
+            TripPurpose.FILL_IN: imp_fill,
+            TripPurpose.SPECIAL_OCCASION: imp_special,
+            TripPurpose.STOCK_UP: impulse_stock,
+            TripPurpose.MEAL_PREP: impulse_meal
+        }
+    }
 
 
 class TripPurposeSelector:
@@ -172,9 +270,24 @@ class TripPurposeSelector:
     - Season/holidays
     """
     
-    def __init__(self):
-        self.trip_characteristics = TRIP_CHARACTERISTICS
-        self.trip_probabilities = TRIP_PURPOSE_PROBABILITIES
+    def __init__(self, config=None):
+        """Initialize with config-based trip characteristics and probabilities
+        
+        Args:
+            config: EnhancedRetailConfig instance. If None, uses legacy hardcoded values.
+        """
+        if config is not None:
+            # Build from config parameters (NEW - replaces hardcoded values)
+            self.trip_characteristics = build_trip_characteristics_from_config(config)
+            self.trip_probabilities = build_trip_probabilities_from_config(config)
+        else:
+            # Fallback: Use legacy hardcoded values (should rarely happen)
+            print("⚠️  WARNING: TripPurposeSelector initialized without config, using legacy hardcoded values")
+            # Create minimal defaults
+            from retailsynth.config import EnhancedRetailConfig
+            default_config = EnhancedRetailConfig()
+            self.trip_characteristics = build_trip_characteristics_from_config(default_config)
+            self.trip_probabilities = build_trip_probabilities_from_config(default_config)
     
     def select_trip_purpose(
         self,
@@ -275,11 +388,14 @@ class TripPurposeSelector:
         """
         chars = self.trip_characteristics[trip_purpose]
         
-        # Sample from normal distribution
-        size = np.random.normal(chars.basket_size_mean, chars.basket_size_std)
+        # Use Gamma distribution (better for count-like continuous data)
+        # Gamma is naturally right-skewed and doesn't require truncation
+        shape = (chars.basket_size_mean / chars.basket_size_std) ** 2
+        scale = chars.basket_size_std ** 2 / chars.basket_size_mean
+        size = int(np.random.gamma(shape, scale))
         
-        # Clip to min/max
-        size = int(np.clip(size, chars.min_items, chars.max_items))
+        # Clip to min/max (soft boundaries, not artificial truncation)
+        size = np.clip(size, chars.min_items, chars.max_items)
         
         return size
     

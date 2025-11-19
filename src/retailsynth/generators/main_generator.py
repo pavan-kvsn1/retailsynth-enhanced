@@ -24,6 +24,17 @@ from retailsynth.catalog import HierarchyMapper
 # Sprint 1.4: Import basket composition component   
 from retailsynth.engines.basket_composer import BasketComposer
 
+# Sprint 2.1: Import promotional engine (Phase 2.1)
+from retailsynth.engines.promotional_engine import PromotionalEngine, StorePromoContext
+from retailsynth.engines.promo_response import PromoResponseCalculator
+
+# Phase 2.6: Import non-linear utility engine
+from retailsynth.engines.nonlinear_utility import NonLinearUtilityEngine, NonLinearUtilityConfig
+
+# Phase 2.7: Import seasonality learning engine
+from retailsynth.engines.seasonality_learning import LearnedSeasonalityEngine
+
+
 # ============================================================================
 # ENHANCED RETAILSYNTH V4.1 (with Real Product Catalog + Purchase History)
 # ============================================================================
@@ -42,6 +53,11 @@ class EnhancedRetailSynthV4_1:
     - Purchase history tracking (brand loyalty, habits, inventory)
     - State-dependent shopping behavior
     - Realistic repeat purchase patterns
+    
+    NEW in Sprint 2.1:
+    - Separate pricing and promotional engines
+    - Comprehensive promotional system (mechanics, displays, features)
+    - Store-specific promotional contexts
     """
     def __init__(self, config: EnhancedRetailConfig):
         self.config = config
@@ -66,6 +82,7 @@ class EnhancedRetailSynthV4_1:
         print(f"   • Product Lifecycle: ✅ Enabled")
         print(f"   • Store Loyalty: ✅ Enabled")
         print(f"   • Purchase History: ✅ Enabled (Sprint 1.3)")
+        print(f"   • Promotional Engine: ✅ Enabled (Sprint 2.1)")
         
         # Load real product catalog (NEW - Sprint 1.1)
         if config.use_real_catalog:
@@ -80,17 +97,62 @@ class EnhancedRetailSynthV4_1:
         
         # Initialize engines
         self.calibration_engine = CalibrationEngine()
-        self.utility_engine = GPUUtilityEngine(self.calibration_engine.parameters)
+        self.utility_engine = GPUUtilityEngine(
+            self.calibration_engine.parameters,
+            enable_nonlinear=config.enable_nonlinear_utilities,
+            use_log_price=config.use_log_price,
+            use_quadratic_quality=config.use_quadratic_quality,
+            config=config,                      # Phase 2: Enable recursive visit probability
+            n_customers=config.n_customers      # Phase 2: For state tracking
+        )
         self.choice_model = ChoiceModel()
-        
-        # Temporal dynamics engines
-        if config.enable_temporal_dynamics:
+
+        # Phase 2.6: Non-linear utility engine (Sprint 2)
+        if config.enable_nonlinear_utilities:
+            nonlinear_config = NonLinearUtilityConfig(
+                use_log_price=config.use_log_price,
+                use_reference_prices=config.use_reference_prices,
+                use_psychological_thresholds=config.use_psychological_thresholds,
+                use_quadratic_quality=config.use_quadratic_quality,
+                loss_aversion_lambda=config.loss_aversion_lambda,
+                ewma_alpha=config.ewma_alpha
+            )
+            self.nonlinear_engine = NonLinearUtilityEngine(nonlinear_config)
+            print(f"   • Non-Linear Utilities: ✅ Enabled (Phase 2.6)")
+        else:
+            self.nonlinear_engine = None
+            print(f"   • Non-Linear Utilities: ❌ Disabled (using linear)")
+
+        # Phase 2.7: Initialize seasonality engine (learned or hard-coded)
+        if config.enable_seasonality_learning:
+            self.seasonality_engine = LearnedSeasonalityEngine(
+                seasonal_patterns_path=config.seasonal_patterns_path,
+                enable_seasonality=config.enable_temporal_dynamics,
+                min_confidence=config.seasonality_min_confidence
+            )
+            # Check if patterns were actually loaded
+            if self.seasonality_engine.n_products_with_patterns > 0 or self.seasonality_engine.n_categories_with_patterns > 0:
+                print(f"   • Seasonality Learning: ✅ Enabled (Phase 2.7)")
+                print(f"      • Product patterns: {self.seasonality_engine.n_products_with_patterns:,}")
+                print(f"      • Category patterns: {self.seasonality_engine.n_categories_with_patterns}")
+            else:
+                print(f"   • Seasonality Learning: ⚠️  Enabled but no patterns loaded")
+                print(f"      • Using uniform seasonality (1.0x)")
+                print(f"      • Run: python scripts/learn_seasonal_patterns.py")
+        elif config.enable_temporal_dynamics:
             self.seasonality_engine = SeasonalityEngine(region=config.region)
+            print(f"   • Seasonality: ✅ Enabled (hard-coded patterns)")
+        else:
+            self.seasonality_engine = None
+            print(f"   • Seasonality: ❌ Disabled")
         
         # Sprint 2: Elasticity models (initialized via load_elasticity_models)
         self.price_hmm = None
         self.cross_price_engine = None
         self.arc_elasticity_engine = None
+
+        # Sprint 2.1: Promotional engine (initialized in generate_base_datasets)
+        self.promotional_engine = None
 
         # Sprint 1.3: Purchase history components (initialized later)
         self.state_manager = None
@@ -103,6 +165,8 @@ class EnhancedRetailSynthV4_1:
         self.pricing_history = []
         self.lifecycle_history = []
         self.market_share_history = []
+
+        self.promo_response_calculator = PromoResponseCalculator()
     
     def _load_real_catalog(self):
         """Load real product catalog from Dunnhumby (NEW - Sprint 1.1)"""
@@ -213,24 +277,26 @@ class EnhancedRetailSynthV4_1:
             self.cross_price_engine = None
         
         # 3. Load arc elasticity parameters
-        arc_path = elasticity_path / 'arc_elasticity_params.parquet'
-        if arc_path.exists():
+        arc_path = elasticity_path / 'arc_elasticity' / 'arc_elasticity_params.pkl'
+        if arc_path.exists() and self.price_hmm is not None:
             try:
-                arc_params = pd.read_parquet(arc_path)
+                # Load arc elasticity with the HMM model
+                self.arc_elasticity_engine = ArcPriceElasticityEngine.load_parameters(
+                    arc_path,
+                    price_hmm=self.price_hmm
+                )
                 
-                # Initialize engine with products DataFrame
-                self.arc_elasticity_engine = ArcPriceElasticityEngine(products_df=products)
-                self.arc_elasticity_engine.product_elasticities = dict(zip(
-                    arc_params['product_id'],
-                    arc_params['arc_elasticity']
-                ))
-                
-                print(f"   ✅ Loaded arc elasticity: {len(arc_params):,} products")
+                print(f"   ✅ Loaded arc elasticity parameters")
+                print(f"      • Inventory decay rate: {self.arc_elasticity_engine.inventory_decay_rate:.1%}/week")
+                print(f"      • Future discount factor: {self.arc_elasticity_engine.future_discount_factor:.3f}")
             except Exception as e:
                 print(f"   ⚠️  Failed to load arc elasticity: {e}")
                 self.arc_elasticity_engine = None
         else:
-            print(f"   ⚠️  Arc elasticity not found: {arc_path}")
+            if not arc_path.exists():
+                print(f"   ⚠️  Arc elasticity not found: {arc_path}")
+            elif self.price_hmm is None:
+                print(f"   ⚠️  Arc elasticity requires HMM model (load HMM first)")
             self.arc_elasticity_engine = None
 
     def generate_all_datasets(self) -> Dict[str, pd.DataFrame]:
@@ -284,6 +350,8 @@ class EnhancedRetailSynthV4_1:
             # Standardize column names to lowercase
             self.datasets['products'].columns = [col.lower() for col in self.datasets['products'].columns]
             
+            print(self.datasets['products'][self.datasets['products']["product_id"] == 928786])
+
             # Add required columns for simulation
             self.datasets['products']['base_price'] = self.datasets['products']['avg_price']
             self.datasets['products']['assortment_role'] = self.datasets['products']['category_role']
@@ -316,6 +384,15 @@ class EnhancedRetailSynthV4_1:
         if self.config.enable_temporal_dynamics:
             self.pricing_engine = PricingEvolutionEngine(len(self.datasets['products']))
 
+        # Sprint 2.1: Initialize promotional engine
+        self.promotional_engine = PromotionalEngine(
+            hmm_model=self.price_hmm,  # Will be None initially, can be set later
+            products_df=self.datasets['products'],
+            stores_df=self.datasets['stores'],
+            config=None  # Use default configuration
+        )
+        print(f"   • Promotional Engine: ✅ Initialized")
+        
         if self.config.enable_product_lifecycle:
             self.lifecycle_engine = ProductLifecycleEngine(
                 self.datasets['products'], 
@@ -333,15 +410,31 @@ class EnhancedRetailSynthV4_1:
         
         # Sprint 1.3: Initialize purchase history components
         self.state_manager = CustomerStateManager(self.datasets['customers']['customer_id'].tolist())
-        self.history_engine = PurchaseHistoryEngine(products=self.datasets['products'], loyalty_weight=self.config.loyalty_weight, 
-                                                    habit_weight=self.config.habit_weight, inventory_weight=self.config.inventory_weight, 
-                                                    variety_weight=self.config.variety_weight, price_memory_weight=self.config.price_memory_weight)
+        self.history_engine = PurchaseHistoryEngine(
+            products=self.datasets['products'], 
+            loyalty_weight=self.config.loyalty_weight, 
+            habit_weight=self.config.habit_weight, 
+            inventory_weight=self.config.inventory_weight, 
+            variety_weight=self.config.variety_weight, 
+            price_memory_weight=self.config.price_memory_weight,
+            inventory_depletion_rate=self.config.inventory_depletion_rate,
+            replenishment_threshold=self.config.replenishment_threshold
+        )
         print(f"   • Purchase History: ✅ Enabled")
 
         # Sprint 1.4: Initialize basket composer
         if self.config.enable_basket_composition and self.config.use_real_catalog:
             self.basket_composer = BasketComposer(products=self.datasets['products'], config=self.config, enable_complements=True, enable_substitutes=True)
             print(f"   • Basket Composition: ✅ Enabled")
+        
+        # Sprint 2.1: Initialize promotional engine
+        self.promotional_engine = PromotionalEngine(
+            hmm_model=self.price_hmm,  # Will be None initially, can be set later
+            products_df=self.datasets['products'],
+            stores_df=self.datasets['stores'],
+            config=None  # Use default configuration
+        )
+        print(f"   • Promotional Engine: ✅ Initialized")
         
         print(f"   ✅ Complete in {(datetime.now() - step_start).total_seconds():.1f}s")
         
@@ -353,6 +446,15 @@ class EnhancedRetailSynthV4_1:
             self.datasets['products']
         )
         print(f"   ✅ Complete in {(datetime.now() - step_start).total_seconds():.1f}s")
+        
+        # Phase 2.6: Initialize reference prices from base prices
+        if self.nonlinear_engine is not None:
+            print(f"\n🧮 Phase 2.6: Initializing reference prices...")
+            self.nonlinear_engine.initialize_reference_prices(
+                self.datasets['products'], 
+                price_column='base_price'
+            )
+            print(f"   ✅ Reference prices initialized for {len(self.datasets['products']):,} products")
 
     def _generate_transactions_with_temporal_dynamics(self) -> Dict[str, pd.DataFrame]:
         """
@@ -370,11 +472,14 @@ class EnhancedRetailSynthV4_1:
             self.config,
             state_manager=self.state_manager,  # Sprint 1.3
             history_engine=self.history_engine,  # Sprint 1.3
-            basket_composer=self.basket_composer  # Sprint 1.4
+            basket_composer=self.basket_composer,  # Sprint 1.4
+            promo_response_calc=self.promo_response_calculator,  # Sprint 2.5
+            nonlinear_engine=self.nonlinear_engine,  # Sprint 2.6
+            products=self.datasets['products']  # Phase 2: For SV-based visit probability
         )
         
         # Get depletion rates for inventory tracking (Sprint 1.3)
-        depletion_rates = get_depletion_rates_by_assortment()
+        depletion_rates = get_depletion_rates_by_assortment(self.config.inventory_depletion_rate)
         
         # Track active products (changes with lifecycle)
         active_products = self.datasets['products'].copy()
@@ -415,17 +520,95 @@ class EnhancedRetailSynthV4_1:
                 current_prices, price_states = self._generate_hmm_prices(week)
                 promo_flags = (price_states > 0).astype(int)  # States 1,2,3 are promotional
             else:
-                # Fall back to simple pricing engine
-                current_prices, promo_flags = self.pricing_engine.evolve_prices(self.precomp.base_prices, week, self.precomp.product_ids)
+                # Sprint 2.1: Use new separated pricing + promotional engines
+                print(f"      💰 Generating base prices...")
+                current_prices = self.pricing_engine.evolve_prices(
+                    self.precomp.base_prices, 
+                    week, 
+                    self.precomp.product_ids
+                )
+                
+                # Generate promotions per store (Sprint 2.1)
+                # For now, use store 1 as default - will iterate over stores in Phase 2.2
+                store_id = self.datasets['stores']['store_id'].iloc[0]
+                promo_context = self.promotional_engine.generate_store_promotions(
+                    store_id=store_id,
+                    week_number=week,
+                    base_prices=current_prices,
+                    product_ids=self.precomp.product_ids
+                )
+                
+                # Apply promotional discounts to get final prices
+                final_prices = np.array([
+                    self.promotional_engine.get_promotional_price(pid, base_price, promo_context)
+                    for pid, base_price in zip(self.precomp.product_ids, current_prices)
+                ])
+                
+                # Create promo flags for backward compatibility
+                promo_flags = np.array([
+                    1 if pid in promo_context.promoted_products else 0
+                    for pid in self.precomp.product_ids
+                ])
+                
+                # Use final prices with promotions applied
+                current_prices = final_prices
+                
+                # Log promotional summary
+                summary = self.promotional_engine.get_promo_summary(promo_context)
+                print(f"         Promos: {summary['n_promotions']} products, "
+                      f"avg discount: {summary['avg_discount']:.1%}, "
+                      f"end caps: {summary['n_end_caps']}, "
+                      f"in-ad: {summary['n_in_ad']}")
             
-            # Apply seasonality multiplier
-            if self.config.enable_temporal_dynamics:
-                for dept in ['Fresh', 'Pantry', 'Personal_Care', 'General_Merchandise']:
-                    dept_mask = self.precomp.departments == dept
-                    multiplier = self.seasonality_engine.get_seasonality_multiplier(week, dept)
-                    # Seasonality affects demand, which we approximate by adjusting visit probability
-                    # This is a simplification - in reality it would affect product choice probabilities
-            
+            # Phase 2.7: Apply seasonality (learned patterns or hard-coded)
+            if self.seasonality_engine is not None:
+                if self.config.enable_seasonality_learning:
+                    # Use learned product-specific seasonal patterns
+                    week_of_year = ((week - 1) % 52) + 1
+                    
+                    # Get categories for products (if available)
+                    category_col = 'commodity_desc' if 'commodity_desc' in self.datasets['products'].columns else 'category'
+                    product_categories = None
+                    
+                    if category_col in self.datasets['products'].columns:
+                        prod_df = self.datasets['products'].set_index('product_id')
+                        product_categories = np.array([
+                            prod_df.loc[pid, category_col] if pid in prod_df.index else 'UNKNOWN'
+                            for pid in self.precomp.product_ids
+                        ])
+                    
+                    # Get seasonal multipliers for all products
+                    seasonal_multipliers = self.seasonality_engine.get_seasonal_multipliers_vectorized(
+                        product_ids=self.precomp.product_ids,
+                        week_of_year=week_of_year,
+                        categories=product_categories,
+                        fallback_value=1.0
+                    )
+                    
+                    # Debug: Check how many products have learned patterns
+                    n_with_patterns = np.sum(seasonal_multipliers != 1.0)
+                    if week == 1:  # Only print first week to avoid spam
+                        print(f"         DEBUG: {n_with_patterns}/{len(seasonal_multipliers)} products have learned seasonal patterns")
+                    
+                    # Apply seasonality to prices (multiplicative effect on demand → reflected in choice)
+                    # Note: We store this for use in transaction generation
+                    # The transaction generator will apply these as demand modifiers
+                    current_prices = current_prices * (1.0 / seasonal_multipliers)  # Lower price = higher demand
+                    
+                    # Log seasonality stats
+                    avg_seasonal = np.mean(seasonal_multipliers)
+                    max_seasonal = np.max(seasonal_multipliers)
+                    min_seasonal = np.min(seasonal_multipliers)
+                    print(f"         Seasonality: avg={avg_seasonal:.2f}, range=[{min_seasonal:.2f}, {max_seasonal:.2f}]")
+                    
+                else:
+                    # Use hard-coded category-level seasonality (legacy)
+                    for dept in ['Fresh', 'Pantry', 'Personal_Care', 'General_Merchandise']:
+                        dept_mask = self.precomp.departments == dept
+                        multiplier = self.seasonality_engine.get_seasonality_multiplier(week, dept)
+                        # Seasonality affects demand, which we approximate by adjusting visit probability
+                        # This is a simplification - in reality it would affect product choice probabilities
+
             # Store pricing history
             self.pricing_history.append({
                 'week': week,
@@ -439,15 +622,32 @@ class EnhancedRetailSynthV4_1:
                     'week': week,
                     'stages': dict(self.lifecycle_engine.lifecycle_stages)
                 })
+
+            # Store Promo Context history For each week, before generating transactions:
+            store_promo_contexts = {}
+            for store_id in self.datasets['stores']['store_id']:
+                store_promo_contexts[store_id] = self.promotional_engine.generate_store_promo_context(
+                    store_id=store_id,
+                    week_number=week,
+                    base_prices=current_prices,
+                    product_ids=self.precomp.product_ids
+                )
             
             # 4. Generate transactions
             print(f"      🛒 Generating transactions...")
             week_transactions, week_items = transaction_gen.generate_week_transactions_vectorized(
-                week, current_prices, promo_flags, week_date
+                week, current_prices, promo_flags, week_date, store_promo_contexts
             )
             
             all_transactions.extend(week_transactions)
             all_transaction_items.extend(week_items)
+            
+            # Phase 2.6: Update reference prices with EWMA after each week
+            if self.nonlinear_engine is not None and self.nonlinear_engine.config.use_reference_prices:
+                self.nonlinear_engine.update_reference_prices(
+                    self.precomp.product_ids,
+                    current_prices
+                )
             
             week_time = (datetime.now() - week_start).total_seconds()
             print(f"      ✅ Week complete: {len(week_transactions):,} transactions in {week_time:.1f}s")
@@ -525,8 +725,8 @@ class EnhancedRetailSynthV4_1:
         if self.config.n_products:
             self.real_products['avg_sales'] = self.real_products['total_revenue'] / self.real_products['total_quantity']
             self.real_products = self.real_products.nlargest(self.config.n_products, 'avg_sales')
-        
-        # Reset index
+
+        # Reset index for sequential access
         self.real_products.reset_index(drop=True, inplace=True)
         
         return self.real_products
@@ -633,17 +833,23 @@ class TemporalVisualizationTools:
         
         for week_num in sorted(transactions['week_number'].unique()):
             week_transactions = transactions[transactions['week_number'] == week_num]
-            week_performance = business_performance[business_performance['week_number'] == week_num]
             
-            weekly_data.append({
-                'week_number': week_num,
-                'total_transactions': len(week_transactions),
-                'total_revenue': week_transactions['total_revenue'].sum(),
-                'avg_basket_size': week_transactions['total_items_count'].mean(),
-                'avg_basket_value': week_transactions['total_revenue'].mean(),
-                'promotion_rate': (week_transactions['promotional_items_count'] > 0).sum() / len(week_transactions) if len(week_transactions) > 0 else 0,
-                'avg_satisfaction': week_transactions['satisfaction_score'].mean(),
-                'total_stores_active': week_performance['store_id'].nunique() if len(week_performance) > 0 else 0
-            })
+            for store_id in sorted(transactions['store_id'].unique()):
+                store_transactions = week_transactions[week_transactions['store_id'] == store_id]
+                
+                if len(store_transactions) == 0:
+                    continue
+                
+                weekly_data.append({
+                    'week_number': week_num,
+                    'store_id': store_id,
+                    'total_transactions': len(store_transactions),
+                    'total_revenue': store_transactions['total_revenue'].sum(),
+                    'avg_basket_size': store_transactions['total_items_count'].mean(),
+                    'avg_basket_value': store_transactions['total_revenue'].mean(),
+                    'avg_satisfaction': store_transactions['satisfaction_score'].mean(),
+                    'promotion_rate': (store_transactions['promotional_items_count'] > 0).sum() / len(store_transactions),
+                    'total_stores_active': business_performance['store_id'].nunique() if len(business_performance) > 0 else 0
+                })
         
         return pd.DataFrame(weekly_data)

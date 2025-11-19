@@ -281,13 +281,14 @@ class CustomerState:
         
         return price_effect
     
-    def get_inventory_need(self, category: str, assortment_role: str) -> float:
+    def get_inventory_need(self, category: str, assortment_role: str, replenishment_threshold: float = 0.4) -> float:
         """
         Calculate inventory-based need for a category
         
         Args:
             category: Product category
             assortment_role: One of lpg_line, front_basket, mid_basket, back_basket
+            replenishment_threshold: Inventory level that triggers restocking (from config)
         
         Returns:
             Utility bonus in range [0, 5.0]
@@ -295,7 +296,12 @@ class CustomerState:
         current_inventory = self.category_inventory.get(category, 0.5)
         
         # Urgency increases as inventory depletes
-        if current_inventory < 0.2:
+        # Scale thresholds relative to replenishment_threshold (default 0.4)
+        critical_threshold = replenishment_threshold * 0.5  # Default: 0.2
+        high_threshold = replenishment_threshold  # Default: 0.4
+        moderate_threshold = replenishment_threshold * 1.5  # Default: 0.6
+        
+        if current_inventory < critical_threshold:
             urgency = 5.0  # Critical need
         elif current_inventory < 0.4:
             urgency = 3.0  # High need
@@ -338,7 +344,6 @@ class CustomerState:
             'avg_category_inventory': np.mean(list(self.category_inventory.values())),
             'weeks_since_new_product': self.weeks_since_new_product
         }
-
 
 class CustomerStateManager:
     """
@@ -447,22 +452,29 @@ def initialize_customer_states(customer_ids: List[int]) -> CustomerStateManager:
     """
     return CustomerStateManager(customer_ids)
 
-def get_depletion_rates_by_assortment() -> Dict[str, float]:
+def get_depletion_rates_by_assortment(base_depletion_rate: float = 0.1) -> Dict[str, float]:
     """
     Get weekly inventory depletion rates by assortment role
     
-    Based on industry-standard retail assortment roles:
-    - lpg_line: High frequency staples (milk, bread) - 30% per week
-    - front_basket: Planned purchases - 25% per week
-    - mid_basket: Regular purchases - 15% per week
-    - back_basket: Occasional purchases - 5% per week
+    Based on industry-standard retail assortment roles, scaled by base_depletion_rate:
+    - lpg_line: High frequency staples (milk, bread) - 3.0x base rate
+    - front_basket: Planned purchases - 2.5x base rate
+    - mid_basket: Regular purchases - 1.5x base rate
+    - back_basket: Occasional purchases - 0.5x base rate
+    
+    Args:
+        base_depletion_rate: Daily depletion rate from config (default 0.1)
     
     Returns:
         Dict mapping assortment_role -> weekly depletion rate
     """
+    # Convert daily rate to weekly rate (7 days)
+    weekly_base = base_depletion_rate * 7
+    
     return {
-        'lpg_line': 0.30,      # Buy every 3-4 weeks
-        'front_basket': 0.25,  # Buy every 4 weeks
-        'mid_basket': 0.15,    # Buy every 6-7 weeks
-        'back_basket': 0.05    # Buy every 20 weeks
+        'lpg_line': weekly_base * 3.0,      # 3x base (high frequency)
+        'front_basket': weekly_base * 2.5,  # 2.5x base (planned)
+        'mid_basket': weekly_base * 1.5,    # 1.5x base (regular)
+        'back_basket': weekly_base * 0.5    # 0.5x base (occasional)
     }
+

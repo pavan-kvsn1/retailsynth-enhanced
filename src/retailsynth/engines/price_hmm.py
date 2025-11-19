@@ -94,9 +94,14 @@ class PriceStateHMM:
                                                                                       'QUANTITY': 'sum',
                                                                                       'RETAIL_DISC': 'sum'}).reset_index()
         
-        # Calculate average price and discount percentage
-        product_week_prices['avg_price'] = product_week_prices['SALES_VALUE'] / product_week_prices['QUANTITY']
-        product_week_prices['discount_pct'] = product_week_prices['RETAIL_DISC'] / product_week_prices['SALES_VALUE']
+        # Calculate average price and discount percentage (with NaN handling)
+        # Avoid division by zero warnings
+        product_week_prices['avg_price'] = product_week_prices['SALES_VALUE'] / product_week_prices['QUANTITY'].replace(0, np.nan)
+        product_week_prices['discount_pct'] = product_week_prices['RETAIL_DISC'] / product_week_prices['SALES_VALUE'].replace(0, np.nan)
+        
+        # Drop rows with invalid prices (NaN or Inf)
+        product_week_prices = product_week_prices.replace([np.inf, -np.inf], np.nan)
+        product_week_prices = product_week_prices.dropna(subset=['avg_price', 'discount_pct'])
         
         # Step 2: Merge with promotional data if available
         if causal_df is not None:
@@ -222,20 +227,28 @@ class PriceStateHMM:
             
             # Only add emission parameters if we have sufficient observations
             if len(state_data) >= 2:  # Need at least 2 observations for meaningful std
-                # Calculate std with NaN handling
-                price_std = state_data['avg_price'].std()
-                discount_std = state_data['discount_pct'].std()
+                # Filter out any remaining NaN/Inf values before std calculation
+                price_values = state_data['avg_price'].replace([np.inf, -np.inf], np.nan).dropna()
+                discount_values = state_data['discount_pct'].replace([np.inf, -np.inf], np.nan).dropna()
                 
-                # Handle NaN or zero std (all identical values)
-                if pd.isna(price_std) or price_std == 0:
+                # Need at least 2 valid values for std
+                if len(price_values) < 2 or len(discount_values) < 2:
+                    continue
+                
+                # Calculate std with clean data (no warnings now!)
+                price_std = price_values.std()
+                discount_std = discount_values.std()
+                
+                # Handle zero std (all identical values)
+                if price_std == 0:
                     price_std = 0.01
-                if pd.isna(discount_std) or discount_std == 0:
+                if discount_std == 0:
                     discount_std = 0.01
                 
                 emissions[state] = {
-                    'price_mean': state_data['avg_price'].mean(),
+                    'price_mean': price_values.mean(),
                     'price_std': price_std,
-                    'discount_mean': state_data['discount_pct'].mean(),
+                    'discount_mean': discount_values.mean(),
                     'discount_std': discount_std
                 }
             # If < 2 observations, don't add this state - insufficient data

@@ -13,6 +13,7 @@ from .precomputation_engine import VectorizedPreComputationEngine
 from .pricing_engine import PricingEvolutionEngine
 from .seasonality_engine import SeasonalityEngine
 from .utility_engine import GPUUtilityEngine
+from .base_price_hmm import BasePriceHMM
 
 __all__ = [
     # Choice modeling
@@ -33,6 +34,9 @@ __all__ = [
     # Computation engines
     'VectorizedPreComputationEngine',
     'GPUUtilityEngine',
+    
+    # Pricing & Promotions (Sprint 2)
+    'BasePriceHMM',
 ]
 
-__version__ = '3.6'
+__version__ = '3.7'

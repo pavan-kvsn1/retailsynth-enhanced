@@ -1,4 +1,3 @@
-
 import numpy as np
 import jax.numpy as jnp
 import pandas as pd
@@ -8,13 +7,16 @@ from ..calibration.calibration_engine import CalibrationEngine
 import jax
 
 # ============================================================================
-# VECTORIZED PRE-COMPUTATION ENGINE (v3.4 - ZERO LOOPS)
+# VECTORIZED PRE-COMPUTATION ENGINE (v4.0 - Phase 2.4 Integration)
+# Now stores individual heterogeneity parameters!
 # ============================================================================
 
 class VectorizedPreComputationEngine:
     """
     ZERO Python loops in matrix construction (v3.4).
     Uses numpy broadcasting and vectorization throughout.
+    
+    Phase 2.4: Now stores individual heterogeneity parameters!
     """
     
     def __init__(self, customers_df: pd.DataFrame, products_df: pd.DataFrame):
@@ -36,6 +38,11 @@ class VectorizedPreComputationEngine:
         self.days_since_visit = customers_df['days_since_last_visit'].values
         self.household_sizes = customers_df['household_size'].values
         self.shopping_personalities = customers_df['shopping_personality'].values
+        
+        # Phase 2.4: Extract heterogeneity parameters
+        print(f"      Extracting heterogeneity parameters (Phase 2.4)...")
+        self.hetero_params_dict = self._extract_heterogeneity_params(customers_df)
+        print(f"         ✅ Stored parameters for {len(self.hetero_params_dict):,} customers")
         
         # Extract product data (vectorized)
         print(f"      Extracting product data ({self.n_products:,} products)...")
@@ -156,6 +163,48 @@ class VectorizedPreComputationEngine:
         role_pref_matrix = customer_role_prefs[:, product_role_indices]
         
         return role_pref_matrix.astype(np.float32)
+    
+    def _extract_heterogeneity_params(self, customers_df: pd.DataFrame) -> Dict[int, Dict]:
+        """
+        Extract Phase 2.4 heterogeneity parameters for all customers
+        
+        Args:
+            customers_df: Customer DataFrame
+        
+        Returns:
+            Dict mapping customer_id to heterogeneity parameters
+        """
+        hetero_params = {}
+        
+        # Check if heterogeneity parameters exist
+        if 'hetero_params' not in customers_df.columns:
+            print("         ⚠️  No heterogeneity parameters found in customers_df")
+            print("         ℹ️  Phase 2.5 promotional response will be disabled")
+            return hetero_params
+        
+        for _, customer in customers_df.iterrows():
+            customer_id = int(customer['customer_id'])
+            
+            # Get heterogeneity parameters (Phase 2.4)
+            if pd.notna(customer.get('hetero_params')):
+                params = customer['hetero_params']
+                
+                # Store with customer_id key for easy lookup
+                hetero_params[customer_id] = {
+                    'customer_id': customer_id,
+                    'promo_responsiveness_param': params.get('promo_responsiveness_param', 1.0),
+                    'price_sensitivity_param': params.get('price_sensitivity_param', 1.2),
+                    'display_sensitivity_param': params.get('display_sensitivity_param', 0.7),
+                    'advertising_receptivity_param': params.get('advertising_receptivity_param', 0.8),
+                    'quality_preference_param': params.get('quality_preference_param', 0.9),
+                    'variety_seeking_param': params.get('variety_seeking_param', 0.6),
+                    'brand_loyalty_param': params.get('brand_loyalty_param', 0.8),
+                    'store_loyalty_param': params.get('store_loyalty_param', 0.8),
+                    'basket_size_preference_param': params.get('basket_size_preference_param', 1.0),
+                    'impulsivity_param': params.get('impulsivity_param', 0.6)
+                }
+        
+        return hetero_params
     
     def update_from_drift(self, updated_customers_df: pd.DataFrame):
         """

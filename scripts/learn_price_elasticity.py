@@ -158,9 +158,9 @@ def learn_cross_price_elasticity(products_df: pd.DataFrame,
     # Estimate from data
     cross_price.estimate_from_data(
         transactions_df,
-        min_observations=10,
-        top_competitors=5,
-        elasticity_threshold=0.1
+        min_observations=5,
+        top_competitors=10,
+        elasticity_threshold=0.05
     )
     
     # Save parameters
@@ -170,12 +170,13 @@ def learn_cross_price_elasticity(products_df: pd.DataFrame,
     
     return cross_price
 
-def initialize_arc_elasticity(hmm: PriceStateHMM) -> ArcPriceElasticityEngine:
+def initialize_arc_elasticity(hmm: PriceStateHMM, output_dir: Path = None) -> ArcPriceElasticityEngine:
     """
     Initialize arc elasticity engine with learned HMM
     
     Args:
         hmm: Trained PriceStateHMM instance
+        output_dir: Directory to save parameters
     
     Returns:
         ArcPriceElasticityEngine instance
@@ -192,6 +193,12 @@ def initialize_arc_elasticity(hmm: PriceStateHMM) -> ArcPriceElasticityEngine:
     )
     
     logger.info("✅ Arc elasticity engine initialized with HMM parameters")
+    
+    # Save parameters
+    if output_dir:
+        arc_dir = output_dir / 'arc_elasticity'
+        arc_dir.mkdir(parents=True, exist_ok=True)
+        arc_elasticity.save_parameters(arc_dir / 'arc_elasticity_params.pkl')
     
     return arc_elasticity
 
@@ -370,7 +377,7 @@ def main():
     cross_price = learn_cross_price_elasticity(products_df, transactions_df, output_dir)
     
     # Step 3: Initialize arc elasticity
-    arc_elasticity = initialize_arc_elasticity(hmm)
+    arc_elasticity = initialize_arc_elasticity(hmm, output_dir)
     
     # Generate validation report
     generate_validation_report(hmm, cross_price, products_df, output_dir)
@@ -384,6 +391,7 @@ def main():
     logger.info(f"  - cross_elasticity/cross_elasticity_matrix.npz")
     logger.info(f"  - cross_elasticity/substitute_groups.csv")
     logger.info(f"  - cross_elasticity/complement_pairs.csv")
+    logger.info(f"  - arc_elasticity/arc_elasticity_params.pkl")
     logger.info(f"  - learning_report.txt")
     logger.info("\nNext steps:")
     logger.info("  1. Review learning_report.txt for validation metrics")

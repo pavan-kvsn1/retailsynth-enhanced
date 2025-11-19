@@ -38,8 +38,8 @@ def main():
     parser.add_argument(
         '--n-skus',
         type=int,
-        default=20000,
-        help='Target number of SKUs (default: 20000)'
+        default=25000,
+        help='Target number of SKUs (default: 25000)'
     )
     parser.add_argument(
         '--output-dir',

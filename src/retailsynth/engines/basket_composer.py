@@ -19,7 +19,7 @@ import numpy as np
 import pandas as pd
 from collections import defaultdict
 
-from .trip_purpose import TripPurpose, TripPurposeSelector, TRIP_CHARACTERISTICS
+from .trip_purpose import TripPurpose, TripPurposeSelector, TripCharacteristics
 from .category_constraints import CategoryConstraintEngine, CategoryConstraint
 from .customer_state import CustomerState
 from retailsynth.config import EnhancedRetailConfig
@@ -76,7 +76,7 @@ class BasketComposer:
             self.category_diversity_weight = 0.3
         
         # Initialize engines
-        self.trip_selector = TripPurposeSelector()
+        self.trip_selector = TripPurposeSelector(config=self.config)  # Pass config for trip characteristics
         self.constraint_engine = CategoryConstraintEngine()
         
         # Build product lookups
@@ -205,7 +205,8 @@ class BasketComposer:
         product_ids: np.ndarray,
         customer_state: Optional[CustomerState] = None,
         week_number: int = 1,
-        day_of_week: Optional[int] = None
+        day_of_week: Optional[int] = None,
+        promo_flags: Optional[np.ndarray] = None
     ) -> List[Tuple[int, int]]:
         """
         Generate a coherent shopping basket
@@ -218,10 +219,15 @@ class BasketComposer:
             customer_state: Optional customer state for history-aware composition
             week_number: Current week (for seasonality)
             day_of_week: Day of week (0=Monday, 6=Sunday)
+            promo_flags: Optional promotional flags array (1.0 = on promo, 0.0 = not)
         
         Returns:
             List of (product_id, quantity) tuples
         """
+        # Store promo flags and product IDs for quantity boost logic
+        self._current_promo_flags = promo_flags
+        self._current_product_ids = product_ids
+        
         # Step 1: Determine trip purpose
         weeks_since_last = self._get_weeks_since_last_trip(customer_state)
         trip_purpose = self.trip_selector.select_trip_purpose(
@@ -416,8 +422,21 @@ class BasketComposer:
         exp_utilities = np.exp(product_utilities - np.max(product_utilities))
         probabilities = exp_utilities / exp_utilities.sum()
         
-        # Sample products
-        n_to_select = min(n_products, len(available_products))
+        # Check for valid probabilities
+        valid_probs = probabilities > 1e-10  # Avoid numerical zeros
+        n_valid = np.sum(valid_probs)
+        
+        if n_valid == 0:
+            # Fallback: uniform probabilities if all utilities are too low
+            probabilities = np.ones(len(available_products)) / len(available_products)
+            n_valid = len(available_products)
+        
+        # Sample products (can't sample more than available valid products)
+        n_to_select = min(n_products, len(available_products), n_valid)
+        
+        if n_to_select == 0:
+            return []
+        
         selected_indices = np.random.choice(
             len(available_products),
             size=n_to_select,
@@ -430,17 +449,39 @@ class BasketComposer:
         for idx in selected_indices:
             product_id = available_products[idx]
             
-            # Determine quantity based on constraint and customer behavior
-            if customer_state and product_id in customer_state.purchase_count:
-                # Repeat customers buy typical quantity
-                quantity = constraint.typical_quantity
+            # FIX Priority 2A: Use config-based quantity distribution
+            if self.config:
+                # Sample from config distribution (tunable!)
+                base_quantity = max(1, int(np.random.normal(
+                    self.config.quantity_mean,
+                    self.config.quantity_std
+                )))
+                
+                # FIX Priority 2B: Apply promotional quantity boost
+                if self._current_promo_flags is not None and self._current_product_ids is not None:
+                    # Find if this product is on promotion
+                    product_idx = np.where(self._current_product_ids == product_id)[0]
+                    if len(product_idx) > 0 and self._current_promo_flags[product_idx[0]] > 0:
+                        # Product is on promotion - apply boost
+                        # Not all customers stockpile - 60% probability
+                        if np.random.random() < 0.6:
+                            base_quantity = int(base_quantity * self.config.promotion_quantity_boost)
+                
+                # Apply category constraint as upper bound
+                quantity = min(base_quantity, constraint.max_quantity_per_product, self.config.quantity_max)
+                
+                # Stock-up trips: increase quantity probability (tunable via trip characteristics)
+                if trip_purpose == TripPurpose.STOCK_UP and np.random.random() < 0.3:
+                    quantity = min(quantity + 1, constraint.max_quantity_per_product, self.config.quantity_max)
             else:
-                # New products: usually buy 1
-                quantity = 1
-            
-            # Occasionally buy more (stockpiling)
-            if trip_purpose == TripPurpose.STOCK_UP and np.random.random() < 0.3:
-                quantity = min(quantity + 1, constraint.max_quantity_per_product)
+                # Fallback: Original hardcoded logic
+                if customer_state and product_id in customer_state.purchase_count:
+                    quantity = constraint.typical_quantity
+                else:
+                    quantity = 1
+                
+                if trip_purpose == TripPurpose.STOCK_UP and np.random.random() < 0.3:
+                    quantity = min(quantity + 1, constraint.max_quantity_per_product)
             
             selected_products.append((product_id, quantity))
         

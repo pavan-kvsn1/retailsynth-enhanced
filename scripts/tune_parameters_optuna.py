@@ -4,9 +4,17 @@ Automated Parameter Tuning with Optuna
 This script uses Bayesian optimization to find optimal RetailSynth parameters
 that best match real Dunnhumby data distributions.
 
+**Sprint 2 Complete**: Now includes ALL Sprint 2 phases (2.1-2.7):
+  - Phase 2.1-2.2: Promotional frequency and mechanics
+  - Phase 2.3: Marketing signal weights
+  - Phase 2.4: Customer heterogeneity distributions
+  - Phase 2.5: Promotional response (already in original Tier 2)
+  - Phase 2.6: Non-linear utilities (loss aversion, reference prices)
+  - Phase 2.7: Seasonality learning (confidence threshold)
+
 **Parameter Tiers**:
 - Tier 1 (15 params): Directly calibratable - direct observable effect
-- Tier 2 (8 params): Indirectly calibratable - aggregate effect
+- Tier 2 (20 params): Indirectly calibratable - aggregate effect (8 original + 12 Sprint 2)
 - Tier 3 (29 params): Not calibratable - fixed at literature defaults
 
 See docs/PARAMETER_TIER_CLASSIFICATION.md for full rationale.
@@ -19,7 +27,7 @@ Usage:
         --n-trials 50 \
         --output outputs/tuning_tier1
     
-    # Tune Tier 1 + 2 (slower, marginal improvement)
+    # Tune Tier 1 + 2 (slower, includes behavioral economics & seasonality)
     python scripts/tune_parameters_optuna.py \
         --real-data data/raw/dunnhumby/transaction_data.csv \
         --tier 1,2 \
@@ -80,10 +88,10 @@ class ParameterTuner:
         print(f"   • Visit frequency: mean={self.target_visit_freq_mean:.2f}, std={self.target_visit_freq_std:.2f}")
         print(f"\n🎯 Tuning Tier(s): {', '.join(map(str, self.tiers))}")
         
-        tier_counts = {1: 15, 2: 8, 3: 29}
+        tier_counts = {1: 15, 2: 27, 3: 29}  # Tier 2: 8 original + 12 Sprint 2 + 7 distribution fixes
         total_params = sum(tier_counts[t] for t in self.tiers)
         print(f"   • Parameters to tune: {total_params}")
-    
+         
     def _compute_target_distributions(self):
         """Compute target distributions from real data"""
         # Basket size distribution
@@ -102,22 +110,36 @@ class ParameterTuner:
         # Instead of total visits, compute visits per week
         # This makes it comparable across different time periods
         self.real_df['transaction_date'] = pd.to_datetime(self.real_df['transaction_date'])
-        
-        customer_data = self.real_df.groupby('customer_id').agg({
-            'transaction_date': lambda x: (x.max() - x.min()).days / 7 + 1,  # Active weeks
-            'transaction_id': 'nunique'  # Total visits
-        })
-        
-        # Visits per week (normalized)
-        visit_freq_per_week = customer_data['transaction_id'] / customer_data['transaction_date']
+
+        # CRITICAL FIX: Count distinct WEEKS visited, not transaction IDs (same as synthetic data)
+        real_customer_visits = self.real_df.groupby('customer_id')['transaction_date'].agg([
+            ('weeks_visited', lambda x: x.dt.isocalendar().week.nunique()),  # Distinct weeks
+            ('first_date', 'min'),
+            ('last_date', 'max')
+        ]).reset_index()
+
+        # Calculate weeks span
+        real_customer_visits['weeks_span'] = (
+            (real_customer_visits['last_date'] - real_customer_visits['first_date']).dt.days / 7 + 1
+        )
+
+        # Visit frequency = weeks visited / weeks span
+        visit_freq_per_week = real_customer_visits['weeks_visited'] / real_customer_visits['weeks_span']
         self.target_visit_freq_dist = visit_freq_per_week.values
         self.target_visit_freq_mean = visit_freq_per_week.mean()
         self.target_visit_freq_std = visit_freq_per_week.std()
         
         # Quantity distribution
         self.target_quantity_dist = self.real_df['quantity'].values
-        self.target_quantity_mean = self.real_df['quantity'].mean()
-        self.target_quantity_std = self.real_df['quantity'].std()
+        self.target_quantity_max_limit = self.real_df['quantity'].mean() + 3 * self.real_df['quantity'].std()
+        self.target_quantity_min_limit = self.real_df['quantity'].mean() - 3 * self.real_df['quantity'].std()
+        self.target_qunatity_dist = self.target_quantity_dist[(self.target_quantity_dist > self.target_quantity_min_limit) & (self.target_quantity_dist < self.target_quantity_max_limit)]
+        self.target_quantity_mean = self.target_qunatity_dist.mean()
+        self.target_quantity_std = self.target_qunatity_dist.std()
+    
+        # Target marketing signal strength (promotional penetration from real data)
+        real_promo_penetration = len(self.real_df[self.real_df['retail_discount'] < 0]) / len(self.real_df)
+        self.target_marketing_signal = real_promo_penetration
     
     def _suggest_parameters(self, trial: optuna.Trial) -> EnhancedRetailConfig:
         """
@@ -128,7 +150,7 @@ class ParameterTuner:
         IMPORTANT: Uses SMALL SCALE for fast tuning (~2-3 min/trial)
         - 1,000 customers (vs 10,000+ in production)
         - 1,000 products (vs 15,000+ in production)
-        - 4 weeks (vs 52+ in production)
+        - 20 weeks (vs 52+ in production)
         
         Rationale: Parameter effects on distributions are scale-invariant.
         A parameter that improves basket size distribution at 1k customers
@@ -142,11 +164,12 @@ class ParameterTuner:
         # ===================================================================
         # TUNING SCALE: Small for fast iteration
         # ===================================================================
-        config.n_customers = 1000       # ~2-3 min generation time
-        config.n_products = 1000        # Enough for distribution patterns
-        config.n_stores = 5             # Reduced from 10
-        config.simulation_weeks = 20    # Enough for behavioral patterns
-        
+        config.n_customers = 500       # ~2-3 min generation time
+        config.n_products = 3000        # Enough for distribution patterns
+        config.n_stores = 10             # Reduced from 10
+        config.simulation_weeks = 10    # Enough for behavioral patterns
+        config.enable_multiple_visits_per_week = False
+
         print(f"   🔧 Tuning scale: {config.n_customers} customers, {config.n_products} products, {config.simulation_weeks} weeks")
         
         # ===================================================================
@@ -157,52 +180,121 @@ class ParameterTuner:
             print(f"   🔧 Tuning Tier 1 parameters...")
             
             # 1. Visit Behavior (1 param)
-            config.base_visit_probability = trial.suggest_float('base_visit_prob', 0.15, 0.50)
+            config.base_visit_probability = trial.suggest_float('base_visit_prob', 0.15, 0.5)
             
             # 2. Basket Size (1 param)
-            config.basket_size_lambda = trial.suggest_float('basket_size_lambda', 1.0, 30.0)
+            config.basket_size_lambda = trial.suggest_float('basket_size_lambda', 1.0, 15.0)
             
             # 3. Quantity Distribution (3 params)
-            config.quantity_mean = trial.suggest_float('quantity_mean', 1.2, 2.5)
-            config.quantity_std = trial.suggest_float('quantity_std', 0.5, 1.5)
+            config.quantity_mean = trial.suggest_float('quantity_mean', 1.2, 5)
+            config.quantity_std = trial.suggest_float('quantity_std', 0.5, 2.5)
             config.quantity_max = trial.suggest_int('quantity_max', 5, 15)
             
             # 4. Temporal Dynamics (2 params)
-            config.inventory_depletion_rate = trial.suggest_float('inventory_depletion_rate', 0.05, 0.20)
+            config.inventory_depletion_rate = trial.suggest_float('inventory_depletion_rate', 0.05, 0.30)
             config.replenishment_threshold = trial.suggest_float('replenishment_threshold', 0.2, 0.5)
             
             # 5. Basket Composition (3 params)
             config.complement_probability = trial.suggest_float('complement_probability', 0.2, 0.7)
-            config.substitute_avoidance = trial.suggest_float('substitute_avoidance', 0.6, 0.95)
+            config.substitute_avoidance = trial.suggest_float('substitute_avoidance', 0.4, 0.8)
             config.category_diversity_weight = trial.suggest_float('category_diversity_weight', 0.1, 0.6)
             
             # 6. Purchase History Weights (5 params)
-            config.loyalty_weight = trial.suggest_float('loyalty_weight', 0.1, 0.6)
-            config.habit_weight = trial.suggest_float('habit_weight', 0.2, 0.7)
-            config.inventory_weight = trial.suggest_float('inventory_weight', 0.3, 0.8)
-            config.variety_weight = trial.suggest_float('variety_weight', 0.1, 0.5)
-            config.price_memory_weight = trial.suggest_float('price_memory_weight', 0.05, 0.3)
+            config.loyalty_weight = trial.suggest_float('loyalty_weight', 0.2, 0.5)  # Was 0.1-0.6, raised for stronger feedback
+            config.habit_weight = trial.suggest_float('habit_weight', 0.2, 0.5)      # Was 0.2-0.7, raised for temporal dynamics
+            config.inventory_weight = trial.suggest_float('inventory_weight', 0.2, 0.5)
+            config.variety_weight = trial.suggest_float('variety_weight', 0.2, 0.5)
+            config.price_memory_weight = trial.suggest_float('price_memory_weight', 0.05, 0.5)
+            
+            # 7. Trip Purpose Basket Sizes (5 params) - NEW: Replaces hardcoded TRIP_CHARACTERISTICS
+            config.trip_stock_up_basket_mean = trial.suggest_float('trip_stock_up_basket', 8.0, 15.0)
+            config.trip_fill_in_basket_mean = trial.suggest_float('trip_fill_in_basket', 3.0, 8.0)
+            config.trip_convenience_basket_mean = trial.suggest_float('trip_convenience_basket', 2.0, 5.0)
+            config.trip_meal_prep_basket_mean = trial.suggest_float('trip_meal_prep_basket', 6.0, 12.0)
+            config.trip_special_basket_mean = trial.suggest_float('trip_special_basket', 10.0, 18.0)
+            
+            # 8. Trip Purpose Probabilities (9 params) - NEW: Replaces hardcoded TRIP_PURPOSE_PROBABILITIES
+            # Price anchor customers (favor stock-up but not too much)
+            config.trip_prob_price_anchor_stock_up = trial.suggest_float('trip_prob_pa_stock_up', 0.15, 0.35)
+            config.trip_prob_price_anchor_fill_in = trial.suggest_float('trip_prob_pa_fill_in', 0.30, 0.50)
+            config.trip_prob_price_anchor_convenience = trial.suggest_float('trip_prob_pa_convenience', 0.10, 0.25)
+            
+            # Convenience customers (favor small trips)
+            config.trip_prob_convenience_convenience = trial.suggest_float('trip_prob_conv_convenience', 0.25, 0.45)
+            config.trip_prob_convenience_fill_in = trial.suggest_float('trip_prob_conv_fill_in', 0.25, 0.45)
+            config.trip_prob_convenience_stock_up = trial.suggest_float('trip_prob_conv_stock_up', 0.10, 0.25)
+            
+            # Planned customers (balanced but organized)
+            config.trip_prob_planned_stock_up = trial.suggest_float('trip_prob_plan_stock_up', 0.20, 0.40)
+            config.trip_prob_planned_meal_prep = trial.suggest_float('trip_prob_plan_meal_prep', 0.25, 0.45)
+            config.trip_prob_planned_fill_in = trial.suggest_float('trip_prob_plan_fill_in', 0.15, 0.35)
         
         # ===================================================================
-        # TIER 2: INDIRECTLY CALIBRATABLE (8 parameters)
+        # TIER 2: INDIRECTLY CALIBRATABLE (20 parameters)
+        # Original 8: Promo response (3), Store loyalty (4), Customer drift (1)
+        # Sprint 2 adds 12: Promo frequency (2), Marketing signal (3), 
+        #                   Heterogeneity (4), Non-linear utilities (2), Seasonality (1)
+        # Distribution fixes add 7: Days since last visit (2), Drift mixture (3), Inventory (2)
+
         # ===================================================================
         
         if 2 in self.tiers:
             print(f"   🔧 Tuning Tier 2 parameters...")
             
-            # 1. Promotion Response (3 params)
+            # 1. Promotion Response (3 params) - Original Tier 2
             config.promotion_sensitivity_mean = trial.suggest_float('promo_sensitivity_mean', 0.3, 0.7)
             config.promotion_sensitivity_std = trial.suggest_float('promo_sensitivity_std', 0.1, 0.3)
-            config.promotion_quantity_boost = trial.suggest_float('promo_quantity_boost', 1.2, 2.0)
+            config.promotion_quantity_boost = trial.suggest_float('promo_quantity_boost', 1.2, 2.5)
             
-            # 2. Store Loyalty (4 params)
-            config.store_loyalty_weight = trial.suggest_float('store_loyalty_weight', 0.4, 0.8)
+            # 2. Store Loyalty (4 params) - Original Tier 2
+            config.store_loyalty_weight = trial.suggest_float('store_loyalty_weight', 0.25, 0.6)  # Was 0.4-0.8, raised for stronger feedback
             config.store_switching_probability = trial.suggest_float('store_switching_prob', 0.05, 0.30)
             config.distance_weight = trial.suggest_float('distance_weight', 0.2, 0.6)
-            config.satisfaction_weight = trial.suggest_float('satisfaction_weight', 0.4, 0.8)
+            config.satisfaction_weight = trial.suggest_float('satisfaction_weight', 0.3, 0.7)
             
-            # 3. Customer Drift (1 param)
-            config.drift_rate = trial.suggest_float('drift_rate', 0.01, 0.15)
+            # 3. Customer Drift (1 param) - Original Tier 2
+            config.drift_rate = trial.suggest_float('drift_rate', 0.01, 0.25)
+            
+            # 4. Phase 2.1 & 2.2: Promotional Frequency (2 params) - NEW Sprint 2
+            config.promo_frequency_min = trial.suggest_float('promo_frequency_min', 0.03, 0.08)
+            config.promo_frequency_max = trial.suggest_float('promo_frequency_max', 0.08, 0.15)
+            
+            # 5. Phase 2.3: Marketing Signal Weights (5 params) - NEW Sprint 2
+            config.marketing_discount_weight = trial.suggest_float('marketing_discount_weight', 0.05, 0.25)
+            config.marketing_display_weight = trial.suggest_float('marketing_display_weight', 0.05, 0.25)
+            config.marketing_advertising_weight = trial.suggest_float('marketing_advertising_weight', 0.05, 0.25)
+            # HEAVILY REDUCED: Prevent marketing feedback loops causing probability saturation
+            config.marketing_visit_weight = trial.suggest_float('marketing_visit_weight', 0.05, 0.25)  # Much lower
+            # MINIMAL MEMORY: Prevent probability accumulation
+            config.visit_memory_weight = trial.suggest_float('visit_memory_weight', 0.01, 0.25)  # Much lower
+            
+            # 6. Phase 2.4: Heterogeneity Distribution (4 params) - NEW Sprint 2
+            config.hetero_promo_alpha = trial.suggest_float('hetero_promo_alpha', 2.0, 5.0)
+            config.hetero_promo_beta = trial.suggest_float('hetero_promo_beta', 1.5, 4.0)
+            config.hetero_display_alpha = trial.suggest_float('hetero_display_alpha', 2.0, 5.0)
+            config.hetero_display_beta = trial.suggest_float('hetero_display_beta', 2.0, 5.0)
+            
+            # 7. Phase 2.6: Non-linear Utilities (2 params) - NEW Sprint 2
+            config.loss_aversion_lambda = trial.suggest_float('loss_aversion_lambda', 1.5, 3.5)
+            config.ewma_alpha = trial.suggest_float('ewma_alpha', 0.1, 0.5)
+            
+            # 8. Phase 2.7: Seasonality Learning (1 param) - NEW Sprint 2
+            config.seasonality_min_confidence = trial.suggest_float('seasonality_min_confidence', 0.2, 0.5)
+
+            # 9. Phase 2.8: Days Since Last Visit (2 params) - NEW Sprint 2
+            config.days_since_last_visit_shape = trial.suggest_float('days_since_last_visit_shape', 1.5, 4.0)
+            config.days_since_last_visit_scale = trial.suggest_float('days_since_last_visit_scale', 2.0, 5.0)
+            
+            # 10. Customer Drift Mixture Model (4 params) - NEW Distribution Fix
+            # Mixture: 90% small drift + 10% life events (large shifts)
+            config.drift_probability = trial.suggest_float('drift_probability', 0.05, 0.20)
+            config.drift_life_event_probability = trial.suggest_float('drift_life_event_probability', 0.05, 0.20)
+            config.drift_life_event_multiplier = trial.suggest_float('drift_life_event_multiplier', 3.0, 8.0)
+            
+            # 11. Inventory Dynamics (2 params) - NEW Visit Frequency Fix
+            # Faster depletion + higher threshold = more frequent visits
+            config.inventory_depletion_rate = trial.suggest_float('inventory_depletion_rate', 0.08, 0.20)
+            config.replenishment_threshold = trial.suggest_float('replenishment_threshold', 0.25, 0.75)
         
         # ===================================================================
         # TIER 3: NOT CALIBRATABLE (29 parameters)
@@ -210,7 +302,18 @@ class ParameterTuner:
         # ===================================================================
         
         # Demographics, personalities, trip purposes, etc. remain at config defaults
+        # Phase 2.6 boolean flags (use_log_price, use_reference_prices, etc.) fixed at True
+        # Phase 2.7 enable_seasonality_learning fixed based on data availability
         # See docs/PARAMETER_TIER_CLASSIFICATION.md for rationale
+        
+        # Enable Sprint 2 features (fixed)
+        config.enable_nonlinear_utilities = True
+        config.use_log_price = True
+        config.use_reference_prices = True
+        config.use_psychological_thresholds = True
+        config.use_quadratic_quality = True
+        config.enable_seasonality_learning = True
+        config.seasonal_patterns_path = 'data/processed/seasonal_patterns/seasonal_patterns.pkl'
         
         return config
     
@@ -252,11 +355,7 @@ class ParameterTuner:
                     trans_df = datasets['transactions']
                     
                     # Merge to get customer_id and transaction_date
-                    synth_df = items_df.merge(
-                        trans_df[['transaction_id', 'customer_id', 'transaction_date']],
-                        on='transaction_id',
-                        how='left'
-                    )
+                    synth_df = items_df.merge(trans_df[['transaction_id', 'customer_id', 'transaction_date', 'total_discount']], on='transaction_id', how='left')
                     
                     print(f"   ✅ Generated {len(synth_df):,} transaction items from {len(trans_df):,} transactions")
                     
@@ -277,7 +376,7 @@ class ParameterTuner:
                 return 0.0
             
             # Check if required columns exist
-            required_cols = ['transaction_id', 'customer_id', 'line_total', 'quantity']
+            required_cols = ['transaction_id', 'customer_id', 'line_total', 'quantity', 'total_discount']
             missing_cols = [col for col in required_cols if col not in synth_df.columns]
             if missing_cols:
                 print(f"   ❌ Missing columns: {missing_cols}")
@@ -291,32 +390,75 @@ class ParameterTuner:
             
             # Visit frequency (NORMALIZED by time period)
             synth_df['transaction_date'] = pd.to_datetime(synth_df['transaction_date'])
-            synth_customer_data = synth_df.groupby('customer_id').agg({
-                'transaction_date': lambda x: (x.max() - x.min()).days / 7 + 1,  # Active weeks
-                'transaction_id': 'nunique'  # Total visits
-            })
-            synth_visit_freq = (synth_customer_data['transaction_id'] / synth_customer_data['transaction_date']).values
+            
+            # CRITICAL FIX: Count distinct WEEKS visited, not transaction IDs
+            # A customer can have multiple transactions per week but should only count as 1 visit
+            synth_customer_visits = synth_df.groupby('customer_id')['transaction_date'].agg([('weeks_visited', lambda x: x.dt.isocalendar().week.nunique()),  # Distinct weeks
+                                                                                            ('first_date', 'min'),
+                                                                                            ('last_date', 'max')]).reset_index()
+            
+            # Calculate weeks span (for customers who don't visit every week)
+            synth_customer_visits['weeks_span'] = ((synth_customer_visits['last_date'] - synth_customer_visits['first_date']).dt.days / 7 + 1)
+            
+            # Visit frequency = weeks visited / weeks span
+            synth_visit_freq = (synth_customer_visits['weeks_visited'] / synth_customer_visits['weeks_span']).values
+            
+            # LOGGING: Debug visit frequency calculation (with CORRECTED values)
+            if trial.number % 5 == 0:  # Every 5 trials
+                print(f"\n   🔍 Visit Frequency Debug (Trial {trial.number}) - CORRECTED:")
+                sample_customers = synth_customer_visits.head(10)
+                for _, row in sample_customers.iterrows():
+                    weeks_visited = row['weeks_visited']
+                    weeks_span = row['weeks_span']
+                    freq = weeks_visited / weeks_span
+                    print(f"      Customer {row['customer_id']}: {weeks_visited} weeks / {weeks_span:.1f} span = {freq:.2f}")
+                
+                print(f"   📊 Visit Frequency Distribution (CORRECTED):")
+                print(f"      Mean: {synth_visit_freq.mean():.3f}")
+                print(f"      Median: {np.median(synth_visit_freq):.3f}")
+                print(f"      Std: {synth_visit_freq.std():.3f}")
+                print(f"      P10: {np.percentile(synth_visit_freq, 10):.3f}")
+                print(f"      P90: {np.percentile(synth_visit_freq, 90):.3f}")
+            
+            # For backward compatibility with existing code that expects synth_customer_data
+            synth_customer_data = synth_customer_visits.set_index('customer_id')
+            synth_customer_data['transaction_id'] = synth_customer_visits['weeks_visited'].values
+            synth_customer_data['transaction_date'] = synth_customer_visits['weeks_span'].values
             
             synth_quantities = synth_df['quantity'].values
             
+            # Extract marketing signal strength from generator logs
+            #Transaction-level (% of transactions with at least one promo)
+            promo_transactions = synth_df[synth_df['total_discount'] > 0]['transaction_id'].nunique()
+            total_transactions = synth_df['transaction_id'].nunique()
+            synth_marketing_signal = promo_transactions / total_transactions
+
             print(f"   📊 Synthetic stats:")
             print(f"      • Transactions: {len(synth_basket_sizes):,}")
             print(f"      • Customers: {synth_df['customer_id'].nunique():,}")
             print(f"      • Avg basket size: {synth_basket_sizes.mean():.2f}")
             print(f"      • Avg revenue: ${synth_revenues.mean():.2f}")
+            print(f"      • Avg visit frequency: {synth_visit_freq.mean():.2f}")
+            print(f"      • Avg quantity: {synth_quantities.mean():.2f}")
+            print(f"      • Marketing signal: {synth_marketing_signal:.3f}")
             
-            # Compute KS complements
-            ks_basket = self._compute_ks_complement(synth_basket_sizes, self.target_basket_size_dist)
-            ks_revenue = self._compute_ks_complement(synth_revenues, self.target_revenue_dist)
-            ks_visit_freq = self._compute_ks_complement(synth_visit_freq, self.target_visit_freq_dist)
-            ks_quantity = self._compute_ks_complement(synth_quantities, self.target_quantity_dist)
             
             #Print target distributions
             print(f"   📊 Target stats:")
             print(f"      • Basket size: {self.target_basket_size_dist.mean():.2f}")
             print(f"      • Revenue: ${self.target_revenue_dist.mean():.2f}")
             print(f"      • Visit frequency: {self.target_visit_freq_dist.mean():.2f}")
-            print(f"      • Quantity: {self.target_quantity_dist.mean():.2f}")
+            print(f"      • Quantity: {self.target_quantity_mean:.2f}")
+            print(f"      • Marketing signal: {self.target_marketing_signal:.3f}")
+
+            # Compute KS complements
+            ks_basket = self._compute_ks_complement(synth_basket_sizes, self.target_basket_size_dist)
+            ks_revenue = self._compute_ks_complement(synth_revenues, self.target_revenue_dist)
+            ks_visit_freq = self._compute_ks_complement(synth_visit_freq, self.target_visit_freq_dist)
+            ks_quantity = self._compute_ks_complement(synth_quantities, self.target_quantity_dist)
+            # Marketing signal as single value comparison (absolute difference)
+            marketing_signal_error = abs(synth_marketing_signal - self.target_marketing_signal)
+            ks_marketing_signal = max(0.0, 1.0 - marketing_signal_error) # Scale to 0-1 range
 
             # Compute objective based on optimization goal
             if self.objective == 'basket_size':
@@ -325,14 +467,50 @@ class ParameterTuner:
                 score = ks_revenue
             elif self.objective == 'visit_frequency':
                 score = ks_visit_freq
-            elif self.objective == 'combined':
-                # Weighted average of all metrics
-                score = (ks_basket * 0.3 + ks_revenue * 0.3 + ks_visit_freq * 0.3 + ks_quantity * 0.1)
+            elif self.objective == 'marketing_signal':
+                score = ks_marketing_signal
+            elif self.objective == 'combined' or self.objective == 'all':
+                # PHASE 1 IMPROVEMENT: Harmonic mean + penalties for balanced optimization
+                # Forces Optuna to optimize ALL metrics, not just 3/4
+                
+                # Core metrics with equal importance
+                core_metrics = [ks_basket, ks_revenue, ks_visit_freq, ks_quantity]
+                
+                # 1. Harmonic mean (penalizes low outliers heavily)
+                # If one metric is bad, harmonic mean drops significantly
+                harmonic_mean = len(core_metrics) / sum(1.0 / max(m, 0.01) for m in core_metrics)
+                
+                # 2. Standard deviation penalty (reward consistency)
+                std_dev = np.std(core_metrics)
+                std_penalty = max(0.0, 1.0 - std_dev / 0.3)  # Penalize if std > 0.3
+                
+                # 3. Low metric penalty (extra penalty for any metric < 0.5)
+                low_count = sum(1 for m in core_metrics if m < 0.5)
+                low_penalty = low_count * 0.05
+                
+                # 4. Excellence bonus (bonus if all metrics > 0.7)
+                excellence_bonus = 0.1 if all(m > 0.7 for m in core_metrics) else 0.0
+                
+                # 5. Marketing signal component (secondary importance)
+                marketing_component = ks_marketing_signal * 0.1
+                
+                # Combine components
+                score = (
+                    0.65 * harmonic_mean +        # Main score (forces balance)
+                    0.15 * std_penalty +          # Reward consistency
+                    0.10 * marketing_component +  # Marketing signal
+                    excellence_bonus -            # Bonus for all good
+                    low_penalty                   # Penalty for any bad
+                )
+                
+                # Ensure score is in [0, 1]
+                score = max(0.0, min(1.0, score))
             else:
                 score = ks_basket
             
             print(f"   📊 Scores: Basket={ks_basket:.3f}, Revenue={ks_revenue:.3f}, "
-                  f"VisitFreq={ks_visit_freq:.3f}, Quantity={ks_quantity:.3f}")
+                  f"VisitFreq={ks_visit_freq:.3f}, Quantity={ks_quantity:.3f}", 
+                  f"Marketing Signal={ks_marketing_signal:.3f}")
             print(f"   🎯 Combined Score: {score:.4f}")
             
             return score
@@ -409,10 +587,10 @@ def main():
     parser.add_argument('--real-data', type=str, required=False, 
                        default='data/processed/dunnhumby_calibration.csv',
                        help='Path to real transaction data CSV')
-    parser.add_argument('--n-trials', type=int, default=50,
-                       help='Number of Optuna trials (default: 50)')
+    parser.add_argument('--n-trials', type=int, default=20,
+                       help='Number of Optuna trials (default: 20)')
     parser.add_argument('--objective', type=str, default='combined',
-                       choices=['basket_size', 'revenue', 'visit_frequency', 'combined'],
+                       choices=['basket_size', 'revenue', 'visit_frequency', 'marketing_signal', 'combined'],
                        help='Optimization objective (default: combined)')
     parser.add_argument('--tier', type=str, default='1',
                        help='Parameter tiers to tune: "1", "2", or "1,2" (default: 1)')

@@ -41,7 +41,9 @@ class PurchaseHistoryEngine:
         habit_weight: float = 0.4,
         inventory_weight: float = 0.5,
         variety_weight: float = 0.2,
-        price_memory_weight: float = 0.1
+        price_memory_weight: float = 0.1,
+        inventory_depletion_rate: float = 0.1,
+        replenishment_threshold: float = 0.3
     ):
         """
         Initialize purchase history engine
@@ -53,6 +55,8 @@ class PurchaseHistoryEngine:
             inventory_weight: Weight for inventory need (default 0.5)
             variety_weight: Weight for variety-seeking (default 0.2)
             price_memory_weight: Weight for reference price effect (default 0.1)
+            inventory_depletion_rate: Daily inventory depletion rate (default 0.1)
+            replenishment_threshold: Inventory level that triggers restocking (default 0.3)
         """
         self.products = products
         self.loyalty_weight = loyalty_weight
@@ -60,12 +64,14 @@ class PurchaseHistoryEngine:
         self.inventory_weight = inventory_weight
         self.variety_weight = variety_weight
         self.price_memory_weight = price_memory_weight
+        self.inventory_depletion_rate = inventory_depletion_rate
+        self.replenishment_threshold = replenishment_threshold
         
         # Create product lookup dictionaries
         self._build_product_mappings()
         
-        # Get depletion rates by assortment role
-        self.depletion_rates = get_depletion_rates_by_assortment()
+        # Get depletion rates by assortment role (using config parameter)
+        self.depletion_rates = get_depletion_rates_by_assortment(inventory_depletion_rate)
     
     def _build_product_mappings(self):
         """Build efficient lookup dictionaries for product attributes"""
@@ -119,7 +125,7 @@ class PurchaseHistoryEngine:
             adjusted_utilities[i] += self.loyalty_weight * loyalty_bonus
             
             # 2. Inventory need (category-level urgency)
-            inventory_need = customer_state.get_inventory_need(category, assortment_role)
+            inventory_need = customer_state.get_inventory_need(category, assortment_role, self.replenishment_threshold)
             adjusted_utilities[i] += self.inventory_weight * inventory_need
             
             # 3. Price memory effect (if prices provided)

@@ -10,6 +10,38 @@
             "justMyCode": true,
             // 🚨 Key step: Set the absolute path to your interpreter executable
             "python": "/Users/hazymoji/Documents/DataDev/ML Projects/retail_analytics/retail_venv/bin/python" 
+        },
+        {
+            "name": "Python: Debug Product Generation",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/build_product_catalog.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            // 🚨 Key step: Set the absolute path to your interpreter executable
+            "python": "/Users/hazymoji/Documents/DataDev/ML Projects/retail_analytics/retail_venv/bin/python" 
+        },
+        {
+            "name": "Python: Debug Learn Seasonal Patterns",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/learn_seasonal_patterns.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            // 🚨 Key step: Set the absolute path to your interpreter executable
+            "python": "/Users/hazymoji/Documents/DataDev/ML Projects/retail_analytics/retail_venv/bin/python" 
+        },
+                {
+            "name": "Python: Debug Optuna Parameter Tuning",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/scripts/tune_parameters_optuna.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            // 🚨 Key step: Set the absolute path to your interpreter executable
+            "python": "/Users/hazymoji/Documents/DataDev/ML Projects/retail_analytics/retail_venv/bin/python" 
         }
+
+
     ]
 }

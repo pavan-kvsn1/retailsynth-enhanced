@@ -19,6 +19,8 @@ import numpy as np
 import pandas as pd
 from typing import Dict, Optional
 import logging
+import pickle
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +59,54 @@ class ArcPriceElasticityEngine:
         logger.info(f"Initialized ArcPriceElasticityEngine")
         logger.info(f"  Inventory decay rate: {inventory_decay_rate:.1%}/week")
         logger.info(f"  Future discount factor: {future_discount_factor:.3f}")
+    
+    def save_parameters(self, output_path: Path):
+        """
+        Save arc elasticity parameters to file
+        
+        Note: The HMM model is saved separately. This only saves configuration.
+        
+        Args:
+            output_path: Path to save parameters (will save as .pkl)
+        """
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Save configuration parameters (HMM is saved separately)
+        params = {
+            'inventory_decay_rate': self.inventory_decay_rate,
+            'future_discount_factor': self.future_discount_factor,
+            'version': '1.0'
+        }
+        
+        with open(output_path, 'wb') as f:
+            pickle.dump(params, f)
+        
+        logger.info(f"✅ Arc elasticity parameters saved to {output_path}")
+    
+    @classmethod
+    def load_parameters(cls, params_path: Path, price_hmm):
+        """
+        Load arc elasticity parameters from file
+        
+        Args:
+            params_path: Path to saved parameters
+            price_hmm: PriceStateHMM instance (must be loaded separately)
+        
+        Returns:
+            ArcPriceElasticityEngine instance
+        """
+        with open(params_path, 'rb') as f:
+            params = pickle.load(f)
+        
+        instance = cls(
+            price_hmm=price_hmm,
+            inventory_decay_rate=params['inventory_decay_rate'],
+            future_discount_factor=params['future_discount_factor']
+        )
+        
+        logger.info(f"✅ Arc elasticity parameters loaded from {params_path}")
+        return instance
     
     def calculate_arc_effect(self,
                             product_id: int,

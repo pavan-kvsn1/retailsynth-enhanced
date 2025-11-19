@@ -3,28 +3,52 @@ from typing import Tuple, List, Optional, Dict
 import pandas as pd
 
 # ============================================================================
-# PRICING EVOLUTION ENGINE (v3.2)
+# PRICING EVOLUTION ENGINE (v4.0 - Sprint 2.1)
+# Base price evolution only - promotions handled separately
 # ============================================================================
 
 class PricingEvolutionEngine:
     """
-    Models realistic price dynamics over time including:
-    - Competitive pressure
-    - Promotional cycles
+    Models realistic base price dynamics over time including:
     - Cost inflation
-    - Dynamic pricing strategies
+    - Competitive pressure
+    - Market dynamics
+    
+    Note: Promotional pricing is now handled by PromotionalEngine
     """
     
-    def __init__(self, n_products: int):
+    def __init__(self, n_products: int, config: Optional[Dict] = None):
         self.n_products = n_products
-        self.inflation_rate = 0.0005  # ~2.6% annual
-        self.competitive_pressure = 0.001
+        
+        # Load from config or use defaults
+        if config:
+            self.inflation_rate = config.get('inflation_rate', 0.0005)
+            self.competitive_pressure = config.get('competitive_pressure', 0.001)
+            self.price_volatility = config.get('price_volatility', 0.02)
+        else:
+            self.inflation_rate = 0.0005  # ~2.6% annual
+            self.competitive_pressure = 0.001
+            self.price_volatility = 0.02  # ±2% random fluctuations
+        
+        self.min_price = 0.50  # Minimum product price
     
     def evolve_prices(self, base_prices: np.ndarray, week_number: int, 
-                     product_ids: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+                     product_ids: Optional[np.ndarray] = None) -> np.ndarray:
         """
-        Evolve prices based on market dynamics.
-        Returns: (current_prices, promotion_flags)
+        Evolve base prices based on market dynamics.
+        
+        Components:
+        1. Inflation - Long-term price increase (~2.6% annual)
+        2. Competitive pressure - Gradual price reduction
+        3. Random fluctuations - Short-term price volatility
+        
+        Args:
+            base_prices: Array of base prices for products
+            week_number: Current week number
+            product_ids: Optional array of product IDs (for future use)
+        
+        Returns:
+            np.ndarray: Current base prices (no promotional discounts)
         """
         # Get current number of products (may have changed due to lifecycle)
         n_current_products = len(base_prices)
@@ -32,50 +56,79 @@ class PricingEvolutionEngine:
         # Start with base prices
         current_prices = base_prices.copy()
         
-        # Apply inflation
+        # 1. Apply inflation (cost increases over time)
         inflation_factor = 1.0 + (self.inflation_rate * week_number)
         current_prices *= inflation_factor
         
-        # Competitive pressure (slight price reduction over time)
+        # 2. Competitive pressure (slight price reduction over time)
+        # Square root to slow down the effect
         competitive_factor = 1.0 - (self.competitive_pressure * np.sqrt(week_number))
+        competitive_factor = np.maximum(competitive_factor, 0.90)  # Cap at 10% reduction
         current_prices *= competitive_factor
         
-        # Promotional pricing (15-20% of products on promotion each week)
-        n_promotions = int(n_current_products * np.random.uniform(0.15, 0.20))
-        promo_indices = np.random.choice(n_current_products, size=n_promotions, replace=False)
-        promotion_flags = np.zeros(n_current_products, dtype=bool)
-        promotion_flags[promo_indices] = True
-        
-        # Apply promotion discounts (10-30% off)
-        promo_discounts = np.random.uniform(0.10, 0.30, size=n_promotions)
-        current_prices[promo_indices] *= (1.0 - promo_discounts)
-        
-        # Add small random fluctuations (±2%)
-        noise = np.random.normal(1.0, 0.02, size=n_current_products)
+        # 3. Add small random fluctuations (±2%)
+        noise = np.random.normal(1.0, self.price_volatility, size=n_current_products)
         current_prices *= noise
         
-        # Ensure minimum price
-        current_prices = np.maximum(current_prices, 0.50)
+        # 4. Ensure minimum price
+        current_prices = np.maximum(current_prices, self.min_price)
         
-        return current_prices, promotion_flags
+        return current_prices
+    
+    def get_base_price_at_week(self, initial_price: float, week_number: int) -> float:
+        """
+        Calculate base price for a single product at a given week
+        
+        Useful for reference price calculations and validation
+        """
+        price = initial_price
+        
+        # Apply inflation
+        price *= (1.0 + self.inflation_rate * week_number)
+        
+        # Apply competitive pressure
+        competitive_factor = 1.0 - (self.competitive_pressure * np.sqrt(week_number))
+        competitive_factor = max(competitive_factor, 0.90)
+        price *= competitive_factor
+        
+        # Ensure minimum
+        price = max(price, self.min_price)
+        
+        return price
     
     def visualize_price_evolution(self, pricing_history: List[Dict], 
                                  product_ids: List[int]) -> pd.DataFrame:
-        """Create visualization dataset for price evolution"""
+        """
+        Create visualization dataset for base price evolution
+        
+        Note: This now shows base prices only (no promotional effects)
+        """
         price_data = []
         
         for week_prices in pricing_history:
             week_number = week_prices['week']
             prices = week_prices['prices']
-            promos = week_prices['promotions']
             
             for product_id in product_ids:
                 if product_id in prices:
                     price_data.append({
                         'week_number': week_number,
                         'product_id': product_id,
-                        'price': prices[product_id],
-                        'on_promotion': promos.get(product_id, False)
+                        'base_price': prices[product_id]
                     })
         
         return pd.DataFrame(price_data)
+    
+    def get_price_dynamics_summary(self, week_number: int) -> Dict:
+        """
+        Get summary of price dynamics at a given week
+        
+        Useful for debugging and validation
+        """
+        return {
+            'week_number': week_number,
+            'inflation_factor': 1.0 + (self.inflation_rate * week_number),
+            'competitive_factor': max(1.0 - (self.competitive_pressure * np.sqrt(week_number)), 0.90),
+            'expected_price_change': ((1.0 + self.inflation_rate * week_number) * 
+                                     max(1.0 - self.competitive_pressure * np.sqrt(week_number), 0.90))
+        }

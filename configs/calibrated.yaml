@@ -1,0 +1,205 @@
+# Calibrated RetailSynth Configuration
+# Generated from Optuna optimization results (Best score: 0.4189)
+# Date: 2025-11-11
+
+# Simulation Parameters
+n_customers: 1000
+n_products: 1000
+n_stores: 10
+simulation_weeks: 8
+random_seed: 42
+
+# Data Sources
+use_real_catalog: true
+product_catalog_path: "data/processed/product_catalog/product_catalog_20k.parquet"
+
+# Feature Flags
+enable_temporal_dynamics: true
+enable_customer_drift: true
+enable_product_lifecycle: false
+enable_store_loyalty: true
+enable_basket_composition: true
+enable_nonlinear_utilities: true
+enable_seasonality_learning: true
+
+# TIER 1 PARAMETERS (Optimized)
+# Visit Behavior
+base_visit_prob: 0.1502
+
+# Basket Size
+basket_size_lambda: 13.4708
+
+# Quantity Distribution
+quantity_max: 10
+quantity_mean: 1.3129
+quantity_std: 0.5376
+
+# Temporal Dynamics
+inventory_depletion_rate: 0.2908
+replenishment_threshold: 0.4305
+
+# Basket Composition
+complement_probability: 0.3842
+substitute_avoidance: 0.5260
+category_diversity_weight: 0.3574
+
+# Purchase History Weights
+loyalty_weight: 0.4801
+habit_weight: 0.4944
+inventory_weight: 0.2597
+variety_weight: 0.2583
+price_memory_weight: 0.4740
+
+# TIER 2 PARAMETERS (Optimized)
+# Promotion Response
+promo_quantity_boost: 1.5583
+promo_sensitivity_mean: 0.5471
+promo_sensitivity_std: 0.2584
+
+# Store Loyalty
+store_loyalty_weight: 0.2604
+store_switching_prob: 0.2286
+distance_weight: 0.2134
+satisfaction_weight: 0.5893
+
+# Customer Drift
+drift_rate: 0.2046
+
+# Promotional Frequency
+promo_frequency_max: 0.1484
+promo_frequency_min: 0.0597
+
+# Marketing Signal Weights
+marketing_advertising_weight: 0.1488
+marketing_discount_weight: 0.2301
+marketing_display_weight: 0.0634
+marketing_visit_weight: 0.0555
+visit_memory_weight: 0.2445
+
+# Heterogeneity Distribution Parameters
+hetero_display_alpha: 4.7999
+hetero_display_beta: 2.0601
+hetero_promo_alpha: 2.2113
+hetero_promo_beta: 3.1624
+
+# Non-linear Utilities
+use_log_price: true
+use_reference_prices: true
+use_psychological_thresholds: true
+use_quadratic_quality: true
+loss_aversion_lambda: 2.2082
+ewma_alpha: 0.4552
+
+# Seasonality Learning
+seasonal_patterns_path: "data/processed/seasonal_patterns/seasonal_patterns.pkl"
+seasonality_min_confidence: 0.4990
+seasonality_fallback_category: true
+seasonality_smoothing: 0.2 #Not Used
+
+# Distribution Fixes
+days_since_last_visit_scale: 3.6258
+days_since_last_visit_shape: 1.6030
+drift_life_event_multiplier: 4.8325
+drift_life_event_probability: 0.1106
+drift_probability: 0.0602
+
+
+# Trip Purpose Basket Sizes
+trip_convenience_basket: 2.0708
+trip_fill_in_basket: 3.1677
+trip_meal_prep_basket: 9.7259
+trip_special_basket: 13.0019
+trip_stock_up_basket: 10.8545
+
+# Trip Purpose Probabilities
+trip_prob_conv_convenience: 0.4101
+trip_prob_conv_fill_in: 0.3772
+trip_prob_conv_stock_up: 0.1961
+trip_prob_pa_convenience: 0.2478
+trip_prob_pa_fill_in: 0.4874
+trip_prob_pa_stock_up: 0.1554
+trip_prob_plan_fill_in: 0.3368
+trip_prob_plan_meal_prep: 0.3784
+trip_prob_plan_stock_up: 0.3130
+
+
+# Display Capacities
+display_end_cap_capacity: 10 #Not Used
+display_feature_capacity: 3 #Not Used
+
+# Performance
+enable_gpu_acceleration: true
+parallel_weeks: true
+
+# Region
+region: "US"
+
+
+#STORING OPTUNA RESULTS
+#Optimization complete in 136.7 minutes
+#Best score: 0.7485
+#Best parameters saved to: outputs/tuning_results/best_parameters_tier1_2.json
+#Optimization history saved to: outputs/tuning_results/optimization_history_tier1_2.csv
+
+# 📋 Best Parameters:
+#    • base_visit_prob: 0.1502
+#    • basket_size_lambda: 13.4708
+#    • category_diversity_weight: 0.3574
+#    • complement_probability: 0.3842
+#    • days_since_last_visit_scale: 3.6258
+#    • days_since_last_visit_shape: 1.6030
+#    • distance_weight: 0.2134
+#    • drift_life_event_multiplier: 4.8325
+#    • drift_life_event_probability: 0.1106
+#    • drift_probability: 0.0602
+#    • drift_rate: 0.2046
+#    • ewma_alpha: 0.4552
+#    • habit_weight: 0.4944
+#    • hetero_display_alpha: 4.7999
+#    • hetero_display_beta: 2.0601
+#    • hetero_promo_alpha: 2.2113
+#    • hetero_promo_beta: 3.1624
+#    • inventory_depletion_rate: 0.2908
+#    • inventory_weight: 0.2597
+#    • loss_aversion_lambda: 2.2082
+#    • loyalty_weight: 0.4801
+#    • marketing_advertising_weight: 0.1488
+#    • marketing_discount_weight: 0.2301
+#    • marketing_display_weight: 0.0634
+#    • marketing_visit_weight: 0.0555
+#    • price_memory_weight: 0.4740
+#    • promo_frequency_max: 0.1484
+#    • promo_frequency_min: 0.0597
+#    • promo_quantity_boost: 1.5583
+#    • promo_sensitivity_mean: 0.5471
+#    • promo_sensitivity_std: 0.2584
+#    • quantity_max: 10
+#    • quantity_mean: 1.3129
+#    • quantity_std: 0.5376
+#    • replenishment_threshold: 0.4305
+#    • satisfaction_weight: 0.5893
+#    • seasonality_min_confidence: 0.4990
+#    • store_loyalty_weight: 0.2604
+#    • store_switching_prob: 0.2286
+#    • substitute_avoidance: 0.5260
+#    • trip_convenience_basket: 2.0708
+#    • trip_fill_in_basket: 3.1677
+#    • trip_meal_prep_basket: 9.7259
+#    • trip_prob_conv_convenience: 0.4101
+#    • trip_prob_conv_fill_in: 0.3772
+#    • trip_prob_conv_stock_up: 0.1961
+#    • trip_prob_pa_convenience: 0.2478
+#    • trip_prob_pa_fill_in: 0.4874
+#    • trip_prob_pa_stock_up: 0.1554
+#    • trip_prob_plan_fill_in: 0.3368
+#    • trip_prob_plan_meal_prep: 0.3784
+#    • trip_prob_plan_stock_up: 0.3130
+#    • trip_special_basket: 13.0019
+#    • trip_stock_up_basket: 10.8545
+#    • variety_weight: 0.2583
+#    • visit_memory_weight: 0.2445
+#   ''''
+
+
+
+

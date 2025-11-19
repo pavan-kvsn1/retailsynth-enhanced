@@ -4,9 +4,11 @@ from retailsynth.calibration import CalibrationEngine
 from retailsynth.utils import RealisticCategoryHierarchy
 from datetime import datetime
 from retailsynth.config import EnhancedRetailConfig
+from retailsynth.engines.customer_heterogeneity import CustomerHeterogeneityEngine  # Phase 2.4
 
 # ============================================================================
-# CUSTOMER GENERATOR (v3.2)
+# CUSTOMER GENERATOR (v4.0 - Phase 2.4 Heterogeneity)
+# Individual customer parameters replace discrete archetypes
 # ============================================================================
 
 class CustomerGenerator:
@@ -19,12 +21,23 @@ class CustomerGenerator:
                                      calibration_engine: CalibrationEngine) -> pd.DataFrame:
         """
         Generate customers with vectorized operations.
-        Only unavoidable loops (utility param sampling) remain.
+        
+        Phase 2.4: Now generates individual heterogeneous parameters
+        instead of discrete customer types.
         """
-        print(f"      Generating {config.n_customers:,} customers (vectorized)...")
+        print(f"      Generating {config.n_customers:,} customers (Phase 2.4 - Heterogeneous)...")
         start_time = datetime.now()
         
         n = config.n_customers
+        
+        # Phase 2.4: Initialize heterogeneity engine
+        heterogeneity_engine = CustomerHeterogeneityEngine(
+            random_seed=config.random_seed if hasattr(config, 'random_seed') else None
+        )
+        
+        # Generate heterogeneous parameters for all customers
+        print("         Generating individual behavioral parameters...")
+        customer_params_df = heterogeneity_engine.generate_population_parameters(n)
         
         # Vectorized generation of basic attributes (NOW FROM CONFIG)
         ages = np.random.choice(config.age_values, size=n, p=config.age_probabilities)
@@ -58,20 +71,17 @@ class CustomerGenerator:
             p=config.senior_income_probs
         )
         
-        # Vectorized price sensitivity (NOW USING CONFIG)
-        price_sensitivity = np.empty(n, dtype=object)
-        for i, (income, personality) in enumerate(zip(income_brackets, personalities)):
-            # Use config-based price sensitivity
-            income_sens = config.price_sensitivity_by_income.get(income, 0.5)
-            personality_sens = config.price_sensitivity_by_personality.get(personality, 0.5)
-            # Average the two factors
-            combined_sens = (income_sens + personality_sens) / 2
-            if combined_sens > 0.6:
-                price_sensitivity[i] = 'high'
-            elif combined_sens < 0.4:
-                price_sensitivity[i] = 'low'
-            else:
-                price_sensitivity[i] = 'medium'
+        # Phase 2.4: Extract heterogeneous parameters
+        # No longer discrete categories - continuous values!
+        price_sensitivity_continuous = customer_params_df['price_sensitivity'].values
+        quality_preference_continuous = customer_params_df['quality_preference'].values
+        promo_responsiveness_continuous = customer_params_df['promo_responsiveness'].values
+        
+        # For backward compatibility, create categorical labels (analysis only)
+        price_sensitivity_category = np.empty(n, dtype=object)
+        price_sensitivity_category[price_sensitivity_continuous < 1.0] = 'low'
+        price_sensitivity_category[(price_sensitivity_continuous >= 1.0) & (price_sensitivity_continuous < 1.5)] = 'medium'
+        price_sensitivity_category[price_sensitivity_continuous >= 1.5] = 'high'
         
         # Vectorized marital status (NOW USING CONFIG)
         marital_status = np.where(
@@ -87,7 +97,7 @@ class CustomerGenerator:
             np.random.choice([0, 1, 2, 3], size=n, p=config.children_probs)
         )
         
-        # Build customer list (only loop needed for utility params and brand prefs)
+        # Build customer list
         all_brands = RealisticCategoryHierarchy.get_all_brands()
         customers = []
         
@@ -111,23 +121,28 @@ class CustomerGenerator:
                 'income_bracket': income_bracket,
                 'household_size': household_size,
                 'shopping_personality': shopping_personality,
-                'price_sensitivity': price_sensitivity[i]
+                'price_sensitivity': price_sensitivity_category[i]  # Categorical for calibration
             }
             utility_params = calibration_engine.sample_utility_parameters(customer_demographics)
             
-            # Brand preferences (NOW USING CONFIG)
+            # Phase 2.4: Override utility params with heterogeneous parameters
+            # This ensures individual variation takes precedence
+            utility_params['price_sensitivity'] = float(price_sensitivity_continuous[i])
+            utility_params['quality_weight'] = float(quality_preference_continuous[i])
+            
+            # Brand preferences (NOW USING CONFIG + HETEROGENEITY)
             brand_preferences = {}
             n_preferred_brands = np.random.choice([3, 4, 5, 6, 7], p=[0.15, 0.25, 0.30, 0.20, 0.10])
             preferred_brands = np.random.choice(all_brands, size=n_preferred_brands, replace=False)
             
-            # Use config-based brand loyalty
-            base_loyalty = config.brand_loyalty_by_personality.get(shopping_personality, config.brand_loyalty_mean)
-            loyalty_std = config.brand_loyalty_std
+            # Phase 2.4: Use individual brand_loyalty parameter
+            brand_loyalty_param = customer_params_df.loc[i, 'brand_loyalty']
+            loyalty_std = 0.15  # Some variation around individual parameter
             
             for brand in preferred_brands:
-                # Sample from normal distribution around personality-specific mean
-                pref = np.random.normal(base_loyalty, loyalty_std)
-                pref = np.clip(pref, 0.1, 0.95)  # Clip to valid range
+                # Sample around individual brand loyalty
+                pref = np.random.normal(brand_loyalty_param * 0.5, loyalty_std)  # Scale to [0, 1]
+                pref = np.clip(pref, 0.1, 0.95)
                 brand_preferences[brand] = round(pref, 3)
             
             # Trip purpose preferences (NEW - Sprint 1.4)
@@ -137,6 +152,20 @@ class CustomerGenerator:
                 age
             )
             
+            # Phase 2.4: Extract all heterogeneous parameters for this customer
+            hetero_params = {
+                'price_sensitivity_param': float(price_sensitivity_continuous[i]),
+                'quality_preference_param': float(quality_preference_continuous[i]),
+                'promo_responsiveness_param': float(promo_responsiveness_continuous[i]),
+                'display_sensitivity_param': float(customer_params_df.loc[i, 'display_sensitivity']),
+                'advertising_receptivity_param': float(customer_params_df.loc[i, 'advertising_receptivity']),
+                'variety_seeking_param': float(customer_params_df.loc[i, 'variety_seeking']),
+                'brand_loyalty_param': float(customer_params_df.loc[i, 'brand_loyalty']),
+                'store_loyalty_param': float(customer_params_df.loc[i, 'store_loyalty']),
+                'basket_size_preference_param': float(customer_params_df.loc[i, 'basket_size_preference']),
+                'impulsivity_param': float(customer_params_df.loc[i, 'impulsivity'])
+            }
+            
             customers.append({
                 'customer_id': customer_id,
                 'age': age,
@@ -145,18 +174,25 @@ class CustomerGenerator:
                 'children_count': int(children_count[i]),
                 'income_bracket': income_bracket,
                 'shopping_personality': shopping_personality,
-                'price_sensitivity': price_sensitivity[i],
-                'store_loyalty_level': round(np.random.beta(2, 3), 3),
-                'days_since_last_visit': int(np.random.exponential(7)),
+                'price_sensitivity': price_sensitivity_category[i],  # Categorical (analysis only)
+                'store_loyalty_level': float(customer_params_df.loc[i, 'store_loyalty']),  # Phase 2.4: From heterogeneity
+                # Use Gamma distribution for habit formation (not memoryless Exponential)
+                # Gamma captures consistent shopping patterns ("Saturday shopper")
+                'days_since_last_visit': int(np.random.gamma(
+                    config.days_since_last_visit_shape,
+                    config.days_since_last_visit_scale
+                )),
                 'mobile_usage_propensity': round(mobile_usage, 3),
                 'sustainability_preference': round(sustainability, 3),
                 'utility_params': utility_params,
+                'hetero_params': hetero_params,  # Phase 2.4: Individual parameters
                 'brand_preferences': brand_preferences,
-                'trip_preferences': trip_preferences,  # NEW - Sprint 1.4
+                'trip_preferences': trip_preferences,
                 'created_at': datetime.now()
             })
         
         print(f"\n         ✅ Generated in {(datetime.now() - start_time).total_seconds():.1f}s")
+        print(f"         ✅ Every customer has unique behavioral parameters!")
         return pd.DataFrame(customers)
     
     @staticmethod

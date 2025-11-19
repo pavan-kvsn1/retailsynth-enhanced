@@ -10,12 +10,15 @@ class TemporalCustomerDriftEngine:
     """
     Manages customer evolution over time with realistic demographic changes (v3.6).
     Includes life events, income mobility, and behavioral drift.
+    
+    **NEW**: Mixture model for drift - 90% small gradual changes + 10% life events
     """
     
-    def __init__(self, customers_df: pd.DataFrame):
+    def __init__(self, customers_df: pd.DataFrame, config=None):
         print("   🔧 Initializing temporal customer drift engine...")
         self.customers = customers_df.copy()
         self.n_customers = len(customers_df)
+        self.config = config  # Store config for drift parameters
         
         # Track customer state changes
         self.drift_history = []
@@ -40,17 +43,51 @@ class TemporalCustomerDriftEngine:
         return self.customers
     
     def _apply_gradual_drift(self, week_number: int):
-        """Apply gradual drift to utility parameters and behaviors"""
+        """
+        Apply gradual drift to utility parameters and behaviors
         
-        # Price sensitivity drift (economic pressure increasing)
-        price_drift_rate = 0.0005  # Small weekly change
+        **NEW**: Mixture model - 90% small drift + 10% life events (large shifts)
+        This better captures real customer behavior:
+        - Most weeks: Small gradual changes
+        - Occasional: Life events (new job, baby, move) cause major shifts
+        """
+        
+        # Get drift parameters from config (with defaults)
+        drift_rate = self.config.drift_rate if self.config else 0.05
+        drift_probability = self.config.drift_probability if self.config else 0.1
+        life_event_prob = self.config.drift_life_event_probability if self.config else 0.1
+        life_event_multiplier = self.config.drift_life_event_multiplier if self.config else 5.0
+        
+        # Apply drift to each customer with mixture model
         for i in range(self.n_customers):
-            utility_params = self.customers.iloc[i]['utility_params']
-            current_beta = utility_params['beta_price']
-            # Trend toward more price-sensitive (more negative)
-            drift = np.random.normal(-price_drift_rate, price_drift_rate * 0.5)
-            new_beta = current_beta * (1 + drift)
-            utility_params['beta_price'] = new_beta
+            # Check if this customer experiences drift this week
+            if np.random.random() < drift_probability:
+                utility_params = self.customers.iloc[i]['utility_params']
+                
+                # Mixture model: 90% small drift, 10% life event
+                if np.random.random() < life_event_prob:
+                    # Life event: Large shift (5x normal drift)
+                    drift_magnitude = drift_rate * life_event_multiplier
+                    drift_type = 'life_event'
+                else:
+                    # Normal drift: Small gradual change
+                    drift_magnitude = drift_rate
+                    drift_type = 'gradual'
+                
+                # Apply drift to price sensitivity
+                current_beta = utility_params['beta_price']
+                drift = np.random.normal(0, drift_magnitude)
+                new_beta = current_beta * (1 + drift)
+                utility_params['beta_price'] = new_beta
+                
+                # Log drift for analysis
+                if drift_type == 'life_event':
+                    self.drift_history.append({
+                        'week': week_number,
+                        'customer_id': self.customers.iloc[i]['customer_id'],
+                        'drift_type': drift_type,
+                        'drift_magnitude': drift
+                    })
         
         # Sustainability preference growth (societal trend)
         sustainability_growth = 0.001  # 0.1% per week = 5% per year

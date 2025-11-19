@@ -28,6 +28,9 @@ class ComprehensiveTransactionGenerator:
     - Store loyalty (v3.6)
     - Purchase history & state dependence (Sprint 1.3)
     - Basket composition logic (Sprint 1.4)
+    - Promotional response (Sprint 2.5)
+    - Non-linear utilities (Sprint 2.6)
+    - SV-based visit probability (Phase 2)
     """
     
     def __init__(self, precomp: VectorizedPreComputationEngine, 
@@ -36,7 +39,10 @@ class ComprehensiveTransactionGenerator:
                  config: EnhancedRetailConfig,
                  state_manager: Optional[CustomerStateManager] = None,
                  history_engine: Optional[PurchaseHistoryEngine] = None,
-                 basket_composer: Optional[BasketComposer] = None):
+                 basket_composer: Optional[BasketComposer] = None,
+                 promo_response_calc = None,  # Sprint 2.5
+                 nonlinear_engine = None,  # Sprint 2.6
+                 products = None):  # Phase 2: For SV-based visit probability
         self.precomp = precomp
         self.utility_engine = utility_engine
         self.store_loyalty = store_loyalty
@@ -51,33 +57,79 @@ class ComprehensiveTransactionGenerator:
         # Sprint 1.4: Basket composition
         self.basket_composer = basket_composer
         self.enable_basket_composition = (basket_composer is not None)
+        
+        # Sprint 2.5: Promotional response
+        self.promo_response_calc = promo_response_calc
+        
+        # Sprint 2.6: Non-linear utilities
+        self.nonlinear_engine = nonlinear_engine
+        
+        # Phase 2: Products for SV calculation
+        self.products = products
     
     def generate_week_transactions_vectorized(self, 
                                              week_number: int,
                                              current_prices: np.ndarray,
                                              promo_flags: np.ndarray,
-                                             week_date: date) -> Tuple[List[Dict], List[Dict]]:
+                                             week_date: date,
+                                             store_promo_contexts: dict = None) -> Tuple[List[Dict], List[Dict]]:
         """
         Generate all transactions for a week using vectorized GPU operations.
-        Includes store loyalty logic (v3.6), purchase history (Sprint 1.3), and basket composition (Sprint 1.4).
+        Includes store loyalty logic (v3.6), purchase history (Sprint 1.3), basket composition (Sprint 1.4),
+        and promotional contexts (Sprint 2).
         """
         # Sprint 1.3: Update all customer states for current week
         if self.enable_history:
             self.state_manager.update_all_states(week_number)
         
+        # Sprint 2: Store promotional contexts for this week
+        self.store_promo_contexts = store_promo_contexts or {}
+        
         # Convert to JAX arrays
         current_prices_jax = jnp.array(current_prices, dtype=jnp.float32)
         promo_flags_jax = jnp.array(promo_flags, dtype=jnp.float32)
         
-        # Step 1: Store visit decisions (vectorized on GPU)
+        # Step 1: Compute utilities for ALL customers × ALL products (GPU)
+        # Note: We need utilities BEFORE visit decision for Phase 2 Store Value calculation
         self.rng_key, subkey = jax.random.split(self.rng_key)
-        visit_probs = self.utility_engine.compute_store_visit_probabilities_gpu(
-            self.precomp.days_since_visit_jax,
-            self.precomp.loyalty_levels_jax,
+        all_utilities = self.utility_engine.compute_all_utilities_gpu(
+            current_prices_jax,
+            self.precomp.beta_price_jax,
+            self.precomp.brand_pref_matrix_jax,
+            self.precomp.beta_brand_jax,
+            promo_flags_jax,
+            self.precomp.beta_promo_jax,
+            self.precomp.role_pref_matrix_jax,
+            self.precomp.beta_role_jax,
             subkey
         )
         
-        # Sample visits
+        # Step 2: Calculate visit probabilities using Phase 2 method (Store Value + Marketing Signal)
+        if self.products is not None and hasattr(self.utility_engine, 'compute_visit_probabilities_with_sv'):
+            # Phase 2: Use Bain's recursive model with Store Value
+            # Create numeric category mapping from commodity_desc (string) -> category_id (int)
+            unique_categories = self.products['commodity_desc'].unique()
+            category_to_id = {cat: idx for idx, cat in enumerate(unique_categories)}
+            product_categories = jnp.array([category_to_id[cat] for cat in self.products['commodity_desc'].values])
+            n_categories = len(unique_categories)
+            
+            visit_probs, store_values = self.utility_engine.compute_visit_probabilities_with_sv(
+                all_utilities,
+                product_categories,
+                self.store_promo_contexts,
+                n_categories
+            )
+        else:
+            # Fallback: Use legacy method (should rarely happen)
+            print("⚠️  WARNING: Phase 2 not available, using legacy visit probability (hardcoded)")
+            self.rng_key, subkey = jax.random.split(self.rng_key)
+            visit_probs = self.utility_engine.compute_store_visit_probabilities_gpu(
+                self.precomp.days_since_visit_jax,
+                self.precomp.loyalty_levels_jax,
+                subkey
+            )
+        
+        # Step 3: Sample visits based on calculated probabilities
         self.rng_key, subkey = jax.random.split(self.rng_key)
         visit_random = jax.random.uniform(subkey, shape=(self.precomp.n_customers,))
         visiting_customers = (visit_random < visit_probs).astype(jnp.int32)
@@ -86,22 +138,11 @@ class ComprehensiveTransactionGenerator:
         if len(visiting_indices) == 0:
             return [], []
         
-        # Step 2: Compute utilities for ALL visiting customers × ALL products (GPU)
-        self.rng_key, subkey = jax.random.split(self.rng_key)
-        all_utilities = self.utility_engine.compute_all_utilities_gpu(
-            current_prices_jax,
-            self.precomp.beta_price_jax[visiting_indices],
-            self.precomp.brand_pref_matrix_jax[visiting_indices],
-            self.precomp.beta_brand_jax[visiting_indices],
-            promo_flags_jax,
-            self.precomp.beta_promo_jax[visiting_indices],
-            self.precomp.role_pref_matrix_jax[visiting_indices],
-            self.precomp.beta_role_jax[visiting_indices],
-            subkey
-        )
+        # Step 4: Extract utilities for visiting customers only (for product selection)
+        all_utilities_for_visitors = all_utilities[visiting_indices]
         
         # Convert to numpy for product sampling
-        all_utilities_np = np.array(all_utilities)
+        all_utilities_np = np.array(all_utilities_for_visitors)
         
         # Sprint 1.3: Apply history-dependent utility adjustments
         if self.enable_history:
@@ -114,12 +155,13 @@ class ComprehensiveTransactionGenerator:
         
         # Step 3 & 4: Generate baskets (Sprint 1.4: Use basket composer if enabled)
         if self.enable_basket_composition:
-            # NEW: Trip-purpose driven basket composition
+            # NEW: Trip-purpose driven basket composition (with Priority 2B promo boost)
             baskets = self._generate_baskets_with_composer(
                 visiting_indices,
                 all_utilities_np,
                 week_number,
-                week_date
+                week_date,
+                promo_flags=np.array(promo_flags_jax) if promo_flags_jax is not None else None
             )
         else:
             # LEGACY: Independent product sampling
@@ -278,7 +320,8 @@ class ComprehensiveTransactionGenerator:
         visiting_indices: np.ndarray,
         all_utilities: np.ndarray,
         week_number: int,
-        week_date: date
+        week_date: date,
+        promo_flags: Optional[np.ndarray] = None
     ) -> List[List[Tuple[int, int]]]:
         """
         Generate baskets using trip-purpose driven basket composition (Sprint 1.4)
@@ -288,6 +331,7 @@ class ComprehensiveTransactionGenerator:
             all_utilities: Utility matrix (n_customers × n_products)
             week_number: Current week
             week_date: Current week date
+            promo_flags: Optional promotional flags (Priority 2B)
         
         Returns:
             List of baskets (each basket is a list of (product_id, quantity))
@@ -306,7 +350,7 @@ class ComprehensiveTransactionGenerator:
             # Get day of week from date
             day_of_week = week_date.weekday() if week_date else None
             
-            # Generate basket using composer
+            # Generate basket using composer (with promo flags for Priority 2B)
             basket = self.basket_composer.generate_basket(
                 customer_id=int(customer_id),
                 shopping_personality=shopping_personality,
@@ -314,7 +358,8 @@ class ComprehensiveTransactionGenerator:
                 product_ids=self.precomp.product_ids,
                 customer_state=customer_state,
                 week_number=week_number,
-                day_of_week=day_of_week
+                day_of_week=day_of_week,
+                promo_flags=promo_flags  # Priority 2B: Enable promotional quantity boost
             )
             
             baskets.append(basket)

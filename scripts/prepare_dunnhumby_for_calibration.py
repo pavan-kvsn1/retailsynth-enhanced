@@ -79,7 +79,8 @@ def prepare_dunnhumby_data(input_path: str, output_path: str, sample_frac: float
         'QUANTITY': 'quantity',
         'PRODUCT_ID': 'product_id',
         'STORE_ID': 'store_id',
-        'WEEK_NO': 'week_number'
+        'WEEK_NO': 'week_number',
+        'RETAIL_DISC': 'retail_discount'
     }
     
     # Check which columns exist
@@ -104,7 +105,7 @@ def prepare_dunnhumby_data(input_path: str, output_path: str, sample_frac: float
         )
     
     # Ensure required columns exist
-    required_cols = ['transaction_id', 'customer_id', 'transaction_date', 'line_total', 'quantity']
+    required_cols = ['transaction_id', 'customer_id', 'transaction_date', 'line_total', 'quantity', 'retail_discount']
     missing_required = [col for col in required_cols if col not in df_processed.columns]
     
     if missing_required:
@@ -123,6 +124,7 @@ def prepare_dunnhumby_data(input_path: str, output_path: str, sample_frac: float
     print(f"   • Avg basket size: {df_processed.groupby('transaction_id').size().mean():.2f}")
     print(f"   • Avg revenue per transaction: ${df_processed.groupby('transaction_id')['line_total'].sum().mean():.2f}")
     print(f"   • Avg quantity per line: {df_processed['quantity'].mean():.2f}")
+    print(f"   • Avg retail discount: {df_processed['retail_discount'].mean():.2f}")
     
     # Save processed data
     output_path = Path(output_path)

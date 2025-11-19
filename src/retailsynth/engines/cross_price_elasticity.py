@@ -55,10 +55,16 @@ class CrossPriceElasticityEngine:
         self.cross_elasticity_matrix = None
         self.substitute_groups = None
         self.complement_pairs = None
-        self.product_id_to_idx = {
-            pid: idx for idx, pid in enumerate(self.products['product_id'])
-        }
         
+        #Handling case sensitivity for product IDs
+        if "PRODUCT_ID" in self.products.columns:
+            self.product_id_to_idx = {
+                pid: idx for idx, pid in enumerate(self.products['PRODUCT_ID'])
+            }
+        else:
+            self.product_id_to_idx = {
+                pid: idx for idx, pid in enumerate(self.products['product_id'])
+            }
         logger.info(f"Initialized CrossPriceElasticityEngine with {len(products_df)} products")
     
     def estimate_from_data(self, 
@@ -119,7 +125,7 @@ class CrossPriceElasticityEngine:
             # Pivot to wide format (products as columns)
             try:
                 quantity_wide = commodity_data.pivot(index='WEEK_NO', columns='PRODUCT_ID', values='quantity_per_customer').fillna(0)
-                price_wide = commodity_data.pivot(index='WEEK_NO', columns='PRODUCT_ID', values='price').fillna(method='ffill').fillna(method='bfill')
+                price_wide = commodity_data.pivot(index='WEEK_NO', columns='PRODUCT_ID', values='price').ffill().bfill()
             except Exception as e:
                 logger.warning(f"Skipping commodity {commodity}: {e}")
                 continue

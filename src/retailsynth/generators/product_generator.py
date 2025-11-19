@@ -41,17 +41,33 @@ class ProductGenerator:
         dept_list = [path[0] for path in selected_paths]
         prices = np.zeros(n_products)
         
+        # Use Log-Normal distribution (better for retail prices)
+        # Real prices are right-skewed: many cheap items, few expensive
         for dept in ['Fresh', 'Pantry', 'Personal_Care', 'General_Merchandise']:
             dept_mask = np.array([d == dept for d in dept_list])
+            n_dept = dept_mask.sum()
+            
             if dept == 'Fresh':
-                prices[dept_mask] = np.random.uniform(1.0, 15.0, dept_mask.sum())
+                # Mean ~$5, range $1-15
+                mu, sigma = 1.5, 0.6
+                prices[dept_mask] = np.random.lognormal(mu, sigma, n_dept)
+                prices[dept_mask] = np.clip(prices[dept_mask], 1.0, 15.0)
             elif dept == 'Pantry':
-                prices[dept_mask] = np.random.uniform(1.5, 20.0, dept_mask.sum())
+                # Mean ~$6, range $1.5-20
+                mu, sigma = 1.7, 0.6
+                prices[dept_mask] = np.random.lognormal(mu, sigma, n_dept)
+                prices[dept_mask] = np.clip(prices[dept_mask], 1.5, 20.0)
             elif dept == 'Personal_Care':
-                prices[dept_mask] = np.random.uniform(3.0, 30.0, dept_mask.sum())
-            else:
-                prices[dept_mask] = np.random.uniform(5.0, 50.0, dept_mask.sum())
-        
+                # Mean ~$10, range $3-30
+                mu, sigma = 2.2, 0.6
+                prices[dept_mask] = np.random.lognormal(mu, sigma, n_dept)
+                prices[dept_mask] = np.clip(prices[dept_mask], 3.0, 30.0)
+            else:  # General_Merchandise
+                # Mean ~$15, range $5-50
+                mu, sigma = 2.6, 0.6
+                prices[dept_mask] = np.random.lognormal(mu, sigma, n_dept)
+                prices[dept_mask] = np.clip(prices[dept_mask], 5.0, 50.0)
+
         # Vectorized role assignment
         roles = np.random.choice(
             ['lpg_line', 'front_basket', 'mid_basket', 'back_basket'],
